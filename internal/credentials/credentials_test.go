@@ -62,6 +62,37 @@ func TestTokenPrecedence(t *testing.T) {
 	check(cfg("from-config", ""), "from-config", SourceConfig)
 }
 
+func TestKeyringLegacyMigration(t *testing.T) {
+	mockKeyring(t)
+	t.Setenv(EnvVar, "")
+
+	if err := keyring.Set(legacyKeyringService, legacyKeyringUser, "from-legacy"); err != nil {
+		t.Fatal(err)
+	}
+
+	token, source, err := Token(cfg("", ""))
+	if err != nil || token != "from-legacy" || source != SourceKeyring {
+		t.Fatalf("Token() = %q, %q, %v", token, source, err)
+	}
+	if got, err := keyring.Get(keyringService, keyringUser); err != nil || got != "from-legacy" {
+		t.Errorf("new entry = %q, %v; want migrated token", got, err)
+	}
+	if _, err := keyring.Get(legacyKeyringService, legacyKeyringUser); err == nil {
+		t.Error("legacy entry should be removed after migration")
+	}
+
+	// logout removes a leftover legacy entry too
+	_ = keyring.Set(legacyKeyringService, legacyKeyringUser, "leftover")
+	if deleted, err := Delete(); err != nil || !deleted {
+		t.Fatalf("Delete() = %v, %v", deleted, err)
+	}
+	for _, e := range [][2]string{{keyringService, keyringUser}, {legacyKeyringService, legacyKeyringUser}} {
+		if _, err := keyring.Get(e[0], e[1]); err == nil {
+			t.Errorf("entry %v still present after Delete", e)
+		}
+	}
+}
+
 func TestTokenCommandErrors(t *testing.T) {
 	mockKeyring(t)
 	t.Setenv(EnvVar, "")

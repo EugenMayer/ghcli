@@ -9,6 +9,33 @@ interactive selections and thus. So you might want to use is a complimentary too
 One good example is batch-merging PR's without using the "merge-queue" feature. You cli will poll and finish the job
 the PR becomes mergeable.
 
+
+## Installation
+
+**Prebuilt binary** from the [latest release](https://github.com/EugenMayer/ghcli/releases/latest),
+for Linux and macOS on amd64 and arm64:
+
+```sh
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+sudo curl -fsSL -o /usr/local/bin/ghcli \
+  "https://github.com/EugenMayer/ghcli/releases/latest/download/ghcli-${OS}-${ARCH}"
+sudo chmod +x /usr/local/bin/ghcli
+ghcli --version
+```
+
+Or use go
+
+```bash
+go install github.com/EugenMayer/ghcli@latest   # or a specific version, e.g. @v0.0.1
+```
+
+For Windows, download `ghcli-windows-amd64.exe` or `ghcli-windows-arm64.exe` from the release.
+Each release also has a `checksums.txt` with SHA-256 sums of all binaries.
+
+**With Go 1.27** (an older Go downloads 1.27 automatically). The binary is installed to
+`$(go env GOPATH)/bin`, usually `~/go/bin`, which must be on your `PATH`:
+
 ## Commands
 
 | Command             | Description                                                          |
@@ -38,8 +65,10 @@ the merge only succeeds when your user may bypass the protection.
 ## Configuration
 
 Create a fine-grained GitHub token owned by the organization of your repositories, with
-**Pull requests** and **Contents** set to read and write. Then store it in your OS keyring:
-
+**Pull requests** and **Contents** set to read and write. Then store it in your OS keyring, which
+is the recommended way (GNOME Keyring or KWallet on Linux, Keychain on macOS, Credential Manager
+on Windows):
+3
 ```sh
 ghcli auth login    # paste the token, input is hidden
 ghcli auth status   # shows the token source, keyring, account and API rate limit
@@ -50,10 +79,7 @@ gopass, 1Password or sops? Use [`os.keyring_command`](README.configuration.md#ad
 instead. See [README.configuration.md](README.configuration.md) for creating the token, all
 supported tools and troubleshooting.
 
-## Installation
-
-Download a binary from the [releases](https://github.com/EugenMayer/ghcli/releases) or build it
-yourself. Building needs Go 1.27.
+### Build and customize
 
 ```sh
 make build    # ./dist/ghcli for the current platform
@@ -70,5 +96,5 @@ make test     # run the tests
   creates a GitHub release with the binaries and checksums.
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.0.1 && git push origin v0.0.1
 ```

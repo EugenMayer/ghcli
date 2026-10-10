@@ -29,6 +29,13 @@ func newStatusCmd() *cobra.Command {
 				fmt.Printf("keyring: %s\n", backend)
 			}
 
+			// Plain-text tokens get the recommendation from Resolve already.
+			if source != credentials.SourceConfig {
+				if tip := credentials.Recommendation(cmd.Context(), source); tip != "" {
+					fmt.Fprintln(cmd.ErrOrStderr(), "ℹ "+tip)
+				}
+			}
+
 			client, err := gh.NewClient(token)
 			if err != nil {
 				return err
@@ -48,13 +55,6 @@ func newStatusCmd() *cobra.Command {
 				return fmt.Errorf("fetching account: %w", err)
 			}
 			fmt.Printf("user:    %s (ID %d)\n", user.GetLogin(), user.GetID())
-
-			// Plain-text tokens get the recommendation from Resolve already.
-			if source != credentials.SourceConfig {
-				if tip := credentials.Recommendation(cmd.Context(), source); tip != "" {
-					fmt.Println("\nℹ " + tip)
-				}
-			}
 			return nil
 		},
 	}

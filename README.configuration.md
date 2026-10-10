@@ -22,9 +22,10 @@ Create a fine-grained token under
 If the organization requires approval for fine-grained tokens, an org owner has to approve the
 token before it works.
 
-## Storing the token
+## Storing the token in the OS keyring (recommended)
 
-Store the token in your OS keyring:
+The recommended way is to store the token in your OS keyring, where it is encrypted and unlocked
+with your login:
 
 ```sh
 ghcli auth login    # paste the token, input is hidden
@@ -38,7 +39,7 @@ limit:   4998 of 5000 API requests left, resets 14:05:12
 user:    you (ID 123456)
 ```
 
-The token is kept under service `ghcli`, user `github.pat` in:
+The token is kept under service `ghcli.github.pat` (account `ghcli`) in:
 
 - **Linux:** the Secret Service, i.e. GNOME Keyring, KWallet (KDE Frameworks 5.97+) or KeePassXC
   with Secret Service integration enabled
@@ -51,7 +52,7 @@ That's all most setups need. The rest of this page is only for special cases.
 
 ## Advanced: `keyring_command`
 
-Use `keyring_command` if you can't or don't want to use the OS keyring, e.g.:
+Prefer the OS keyring above. Use `keyring_command` only if you can't use it, e.g.:
 
 - there is no keyring: SSH sessions, servers and WSL usually have no Secret Service running
 - your token already lives in a password manager such as pass or 1Password
@@ -115,7 +116,8 @@ ghcli uses the first token it finds, in this order:
 1. the `GHCLI_PAT` environment variable, e.g. for CI or a one-off run
 2. `os.keyring_command` in the config
 3. the OS keyring (`ghcli auth login`)
-4. `github.pat` in the config: the token in plain text. If you use it, protect the file with
+4. `github.pat` in the config: the token in plain text. Not recommended: ghcli reminds you on
+   every run to move it to the OS keyring. If you use it anyway, protect the file with
    `chmod 600 ~/.ghcli/config.yml`
 
 ## Troubleshooting

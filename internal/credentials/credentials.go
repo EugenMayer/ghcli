@@ -24,8 +24,12 @@ const (
 	// EnvVar overrides every other token source.
 	EnvVar = "GHCLI_PAT"
 
-	keyringService = "ghcli"
-	keyringUser    = "github.pat"
+	keyringService = "ghcli.github.pat"
+	keyringUser    = "ghcli"
+
+	// Entry used before ghcli.github.pat, migrated on first read.
+	legacyKeyringService = "ghcli"
+	legacyKeyringUser    = "github.pat"
 )
 
 // ErrNoToken is returned by Token when no source provides a token.
@@ -90,14 +94,18 @@ func Delete() (bool, error) {
 	if err := keyringAvailable(); err != nil {
 		return false, fmt.Errorf("removing token from the OS keyring: %w", err)
 	}
-	err := keyring.Delete(keyringService, keyringUser)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return false, nil
+	deleted := false
+	for _, entry := range [][2]string{{keyringService, keyringUser}, {legacyKeyringService, legacyKeyringUser}} {
+		err := keyring.Delete(entry[0], entry[1])
+		if errors.Is(err, keyring.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return deleted, fmt.Errorf("removing token from the OS keyring: %w", err)
+		}
+		deleted = true
 	}
-	if err != nil {
-		return false, fmt.Errorf("removing token from the OS keyring: %w", err)
-	}
-	return true, nil
+	return deleted, nil
 }
 
 // keyringTimeout bounds a keyring lookup. It is generous, as the desktop may show an unlock prompt.
@@ -108,13 +116,31 @@ func keyringGet() (string, error) {
 		return "", err
 	}
 
+	t, err := keyringGetEntry(keyringService, keyringUser)
+	if !errors.Is(err, keyring.ErrNotFound) {
+		return t, err
+	}
+
+	// Move a token stored under the legacy entry; keep the legacy one if that fails.
+	t, err = keyringGetEntry(legacyKeyringService, legacyKeyringUser)
+	if err != nil {
+		return "", err
+	}
+	if keyring.Set(keyringService, keyringUser, t) == nil {
+		_ = keyring.Delete(legacyKeyringService, legacyKeyringUser)
+	}
+	return t, nil
+}
+
+// keyringGetEntry reads one keyring entry, giving up after keyringTimeout.
+func keyringGetEntry(service, user string) (string, error) {
 	type result struct {
 		token string
 		err   error
 	}
 	done := make(chan result, 1)
 	go func() {
-		t, err := keyring.Get(keyringService, keyringUser)
+		t, err := keyring.Get(service, user)
 		done <- result{t, err}
 	}()
 
@@ -134,7 +160,6 @@ func keyringGet() (string, error) {
 	return t, nil
 }
 
-// runCommand runs command in the shell and returns its trimmed output.
 // keyringAvailable reports why the OS keyring can't be used, or nil. On Linux the Secret Service
 // is reached via the D-Bus session bus. Without one, the D-Bus library would launch a new bus whose
 // keyring is locked and can't show an unlock prompt, which blocks forever (SSH, servers, WSL).
@@ -154,6 +179,7 @@ var keyringAvailable = func() error {
 	return errors.New("no D-Bus session bus (DBUS_SESSION_BUS_ADDRESS is not set)")
 }
 
+// runCommand runs command in the shell and returns its trimmed output.
 func runCommand(ctx context.Context, command string, stdin io.Reader) (string, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
