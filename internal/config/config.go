@@ -11,18 +11,21 @@ import (
 
 // Config mirrors ~/.ghcli/config.yml.
 type Config struct {
-	GitHub GitHub `yaml:"github"`
-	OS     OS     `yaml:"os"`
+	// GitHub holds one account per alias, e.g. "default" or an organization name:
+	// github.<alias>.pat.
+	GitHub map[string]GitHubAccount `yaml:"github"`
+	OS     OS                       `yaml:"os"`
 }
 
-type GitHub struct {
+type GitHubAccount struct {
 	// PAT is a (fine-grained / scoped) personal access token stored in plain text.
 	PAT string `yaml:"pat"`
 }
 
 type OS struct {
-	// KeyringCommand is a shell command printing the token, e.g. "pass show github/ghcli".
-	// It is used instead of the built-in OS keyring access.
+	// KeyringCommand is a shell command printing the token, used instead of the built-in OS
+	// keyring access. {alias} is replaced by the alias, e.g. "pass show github/{alias}"; without
+	// it, the command's token is used for every repository.
 	KeyringCommand string `yaml:"keyring_command"`
 }
 

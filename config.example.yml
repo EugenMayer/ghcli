@@ -1,13 +1,31 @@
-# optional, copy to ~/.ghcli/config.yml
-# the token is looked up in this order: GHCLI_PAT env var, os.keyring_command, OS keyring (ghcli auth login), github.pat
+# ~/.ghcli/config.yml - optional.
 #
-# token needs: resource owner = the organization owning the repositories,
-# permissions "Pull requests: read & write" and "Contents: read & write"
-os:
-  # command printing the token, used instead of the built-in OS keyring access,
-  # e.g. pass, 1Password (op read ...), sops -d --extract ..., secret-tool lookup ...
-  keyring_command: pass show github/ghcli | head -n 1
+# Recommended: no config at all. Store one token per organization in the OS keyring:
+#
+#   ghcli auth login --alias geek-labs   # prints a link to create the token with the right permissions
+#   ghcli auth login                     # alias "default": for every other repository
+#   ghcli auth status                    # all tokens, and which one the current repository uses
+#
+# A repository uses the token whose alias is its owner (geek-labs/... -> geek-labs), else the only
+# token or "default". The GHCLI_PAT environment variable overrides everything, for every repository.
+#
+# Token permissions: "Pull requests: read & write", "Contents: read & write" (pr merge) and
+# "Issues: read & write" (pr label), with the organization as resource owner.
+#
+# Only uncomment the settings below for special cases.
 
-github:
-  # or the token in plain text (chmod 600 this file)
-  # pat: github_pat_xxx
+# No OS keyring (SSH, servers, WSL), or tokens kept in a password manager: a command printing the
+# token. It replaces the OS keyring completely, so tokens from 'ghcli auth login' are not used
+# while it is set. {alias} is replaced by the alias, e.g. the organization name.
+#
+# os:
+#   keyring_command: pass show github/{alias} | head -n 1
+
+# Tokens in plain text, not recommended (chmod 600 this file; ghcli reminds you to move them to
+# the OS keyring):
+#
+# github:
+#   geek-labs:
+#     pat: github_pat_xxx
+#   default:
+#     pat: github_pat_xxx

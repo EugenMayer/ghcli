@@ -25,12 +25,13 @@ func newListCmd() *cobra.Command {
 		Short:   "List open pull requests",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, repo, err := setup(cmd)
+			s, err := setup(cmd)
 			if err != nil {
 				return err
 			}
+			repo := s.repo
 
-			prs, err := listOpenPRs(cmd.Context(), client, repo)
+			prs, err := s.listOpenPRs(cmd.Context())
 			if err != nil {
 				return err
 			}

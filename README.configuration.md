@@ -4,7 +4,21 @@ Back to the [README](README.md).
 
 ## Creating the token
 
-Create a fine-grained token under
+The easiest way: run `ghcli auth login --alias <org>`. Before asking for the token, it prints a
+link to GitHub's token form, pre-filled with the organization as resource owner, the permissions
+below and an expiry of 90 days:
+
+```
+Click here to create a PAT with the right permissions - it will let you confirm and adjust:
+  https://github.com/settings/personal-access-tokens/new?contents=write&…&target_name=geek-labs
+  Select the repositories there, then paste the new token below.
+```
+
+GitHub shows the form with everything filled in for you to confirm or adjust; only the repository
+selection can't be pre-filled. `--web` opens the link in the browser, `--expires 30` (or `none`)
+changes the expiry, `--workflows` adds Workflows: write.
+
+To create the token by hand, use
 [Settings → Developer settings → Personal access tokens → Fine-grained tokens](https://github.com/settings/personal-access-tokens/new):
 
 - **Resource owner:** the organization that owns the repositories, e.g. `geek-labs`. A token owned
@@ -12,41 +26,74 @@ Create a fine-grained token under
 - **Repository access:** the repositories you want to automate, or all of them.
 - **Repository permissions:**
 
-  | Permission    | Access         | Needed for                                              |
-  |---------------|----------------|---------------------------------------------------------|
-  | Pull requests | Read and write | Listing open PRs and their labels, updating branches that are behind |
-  | Contents      | Read and write | Merging                                                 |
-  | Metadata      | Read-only      | Added automatically                                     |
-  | Workflows     | Read and write | Optional: only for PRs that change `.github/workflows/` |
+  | Permission    | Access         | Command | Needed for |
+  |---------------|----------------|---------|------------|
+  | Pull requests | Read and write | `pr list`, `pr label`, `pr merge` | Listing open PRs (read), updating branches that are behind before a merge (write) |
+  | Contents      | Read and write | `pr merge` | Merging |
+  | Issues        | Read and write | `pr label` | Listing the repository's labels (read) and adding a label to a PR (write); GitHub manages PR labels through the Issues API |
+  | Metadata      | Read-only      | all | Added automatically |
+  | Workflows     | Read and write | `pr merge` | Optional: only for PRs that change `.github/workflows/` |
+
+  If you only use some commands, the permissions in their rows are enough, e.g. Pull requests
+  (read) for `pr list`.
 
 If the organization requires approval for fine-grained tokens, an org owner has to approve the
 token before it works.
 
+A fine-grained token can only access the repositories of its resource owner. For several
+organizations, create one token per organization and store each under the organization's name,
+see below.
+
 ## Storing the token in the OS keyring (recommended)
 
 The recommended way is to store the token in your OS keyring, where it is encrypted and unlocked
-with your login:
+with your login. As a fine-grained token belongs to a single organization (or user), store one
+token per organization and use the organization name as alias:
 
 ```sh
-ghcli auth login    # paste the token, input is hidden
-ghcli auth status   # token source, keyring, account and API rate limit
+ghcli auth login --alias geek-labs   # paste the token, input is hidden
+ghcli auth login --alias my-other-org
+ghcli auth login                     # alias "default", e.g. for your personal repositories
+ghcli auth status
 ```
 
 ```
-token:   from OS keyring (gith…1234)
 keyring: GNOME Keyring (Secret Service)
-limit:   4998 of 5000 API requests left, resets 14:05:12
-user:    you (ID 123456)
+tokens:
+  default      from OS keyring (gith…1234)
+               user you (ID 123456), 4998 of 5000 API requests left, resets 14:05:12
+› geek-labs    from OS keyring (gith…5678)
+               user you (ID 123456), 4998 of 5000 API requests left, resets 14:05:12
+repository geek-labs/terraform-modules: uses alias "geek-labs" (matches the repository owner)
 ```
 
-The token is kept under service `ghcli.github.pat` (account `ghcli`) in:
+### Which token a repository uses
+
+1. `GHCLI_PAT`, if set: always, for every repository, without looking at aliases
+2. `--alias <name>`, if given
+3. the token whose alias is the repository owner (`geek-labs` for `geek-labs/terraform-modules`)
+4. the only token, if there is just one
+5. `default`, if it exists
+6. otherwise ghcli asks which one to use
+
+When ghcli falls back to `default` or asks, it says so. A 404 for a repository usually means the
+token can't see it; the error names the token used and the `ghcli auth login --alias …` to fix it.
+
+### Where tokens are stored
+
+The token of alias `<alias>` is kept under service `ghcli.github.<alias>.pat` (account `ghcli`),
+e.g. `ghcli.github.geek-labs.pat`, in:
 
 - **Linux:** the Secret Service, i.e. GNOME Keyring, KWallet (KDE Frameworks 5.97+) or KeePassXC
   with Secret Service integration enabled
 - **macOS:** the login Keychain
 - **Windows:** the Credential Manager
 
-To replace the token, run `ghcli auth login` again. `ghcli auth logout` removes it.
+Keyrings can't list their entries, so ghcli also keeps the list of aliases under
+`ghcli.github.aliases` (no secret in it).
+
+To replace a token, run `ghcli auth login --alias <alias>` again. `ghcli auth logout --alias <alias>`
+removes one, `ghcli auth logout --all` removes all.
 
 That's all most setups need. The rest of this page is only for special cases.
 
@@ -58,12 +105,17 @@ Prefer the OS keyring above. Use `keyring_command` only if you can't use it, e.g
 - your token already lives in a password manager such as pass or 1Password
 
 `os.keyring_command` is a shell command that prints the token. It goes into `~/.ghcli/config.yml` (or the
-file given with `--config`) and takes precedence over the OS keyring:
+file given with `--config`) and takes precedence over the OS keyring. `{alias}` is replaced by the
+alias, so one command serves a token per organization:
 
 ```yaml
 os:
-  keyring_command: pass show github/ghcli | head -n 1
+  keyring_command: pass show github/{alias} | head -n 1
 ```
+
+For `geek-labs/terraform-modules`, ghcli runs `pass show github/geek-labs | head -n 1`; if that
+fails, it tries `pass show github/default | head -n 1`. `--alias` picks the alias explicitly.
+Without `{alias}`, the command's token is used for every repository.
 
 ghcli runs it with `sh -c` (`cmd /C` on Windows) on every call and trims the output. If the command
 fails or prints nothing, ghcli stops with that error instead of trying other sources.
@@ -71,7 +123,9 @@ fails or prints nothing, ghcli stops with that error instead of trying other sou
 ### Supported tools
 
 Store the token once with the command in the middle column, then use the `keyring_command` on the
-right. Any other command that prints the token works too.
+right. The table shows a single token; for one token per organization, put `{alias}` where the
+entry name is, e.g. `pass show github/{alias}` or `op read "op://Private/ghcli-{alias}/credential"`.
+Any other command that prints the token works too.
 
 | Tool | Store the token | `keyring_command` |
 |------|-----------------|---------------|
@@ -95,7 +149,8 @@ broader access than a fine-grained PAT.
 
 ### Auto-detection
 
-If no token is configured at all, ghcli tries the tools above, except KeePassXC and the GitHub CLI.
+If no token is configured at all, ghcli looks for a `default` token in the tools above, except
+KeePassXC and the GitHub CLI.
 It only tries tools that are installed and, for pass, gpg, age and sops, only if the entry or file
 exists. The first command that prints a GitHub token (`github_pat_…`, `ghp_…`, …) is saved as
 `keyring_command`, and ghcli tells you:
@@ -106,26 +161,37 @@ exists. The first command that prints a GitHub token (`github_pat_…`, `ghp_…
 ```
 
 Commands that fail, print something else or don't answer within 10 seconds are skipped. Nothing is
-written if no token is found. So with one of these tools, storing the token under the entry name
-from the table and running any ghcli command is all the setup needed.
+written if no token is found. The saved command has no `{alias}`, so its token is used for every
+repository; add `{alias}` to the command for one token per organization.
 
 ## Other token sources
 
 ghcli uses the first token it finds, in this order:
 
-1. the `GHCLI_PAT` environment variable, e.g. for CI or a one-off run
+1. the `GHCLI_PAT` environment variable, e.g. for CI or a one-off run. It is used for every
+   repository, aliases are ignored
 2. `os.keyring_command` in the config
-3. the OS keyring (`ghcli auth login`)
-4. `github.pat` in the config: the token in plain text. Not recommended: ghcli reminds you on
-   every run to move it to the OS keyring. If you use it anyway, protect the file with
-   `chmod 600 ~/.ghcli/config.yml`
+3. the OS keyring (`ghcli auth login --alias <alias>`)
+4. `github.<alias>.pat` in the config: the token in plain text. Not recommended: ghcli reminds you
+   on every run to move it to the OS keyring. If you use it anyway, protect the file with
+   `chmod 600 ~/.ghcli/config.yml`:
+
+   ```yaml
+   github:
+     geek-labs:
+       pat: github_pat_…
+     default:
+       pat: github_pat_…
+   ```
 
 ## Troubleshooting
 
 | Error                                      | Cause                                                                           |
 |--------------------------------------------|---------------------------------------------------------------------------------|
-| `404 Not Found` when listing PRs           | The token can't see the repository: wrong resource owner, repository not selected, or token not yet approved |
+| `404 Not Found` when listing PRs           | The token can't see the repository: wrong resource owner, repository not selected, or token not yet approved. Store a token for the organization with `ghcli auth login --alias <org>` |
+| `several tokens exist (…), none with an alias matching …` | No token is named after the repository owner and there is no `default`: pass `--alias`, or run interactively to choose |
 | `403 Resource not accessible by personal access token` | A permission from [Creating the token](#creating-the-token) is missing |
+| `403` with "needs the repository permission Issues" in `pr label` | Add **Issues: read and write** to the token; GitHub manages PR labels through the Issues API |
 | `403 API rate limit exceeded for user ID …` | Your account is out of API requests. All your tokens and tools share this limit; wait for the reset |
 | `401 Bad credentials`                      | The token is wrong or expired. Check with `ghcli auth status` which source is used |
-| `OS keyring unavailable: …dbus…`           | No Secret Service running (SSH, server, WSL): use `GHCLI_PAT`, `os.keyring_command` or `github.pat` |
+| `OS keyring unavailable: …dbus…`           | No Secret Service running (SSH, server, WSL): use `GHCLI_PAT`, `os.keyring_command` or `github.<alias>.pat` |

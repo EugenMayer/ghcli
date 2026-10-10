@@ -13,7 +13,7 @@ func TestSetKeyringCommand(t *testing.T) {
 	cases := map[string]string{
 		"new file":         "",
 		"empty os":         "os:\n",
-		"existing keys":    "# my config\ngithub:\n  # old token\n  pat: old\nother: 1\n",
+		"existing keys":    "# my config\ngithub:\n  default:\n    # old token\n    pat: old\nother: 1\n",
 		"replaces command": "os:\n  keyring_command: echo old\n",
 	}
 	for name, content := range cases {
@@ -41,7 +41,7 @@ func TestSetKeyringCommand(t *testing.T) {
 			data, _ := os.ReadFile(path)
 			t.Log("\n" + string(data))
 			if strings.Contains(content, "pat: old") {
-				if cfg.GitHub.PAT != "old" || !strings.Contains(string(data), "# old token") || !strings.Contains(string(data), "other: 1") {
+				if cfg.GitHub["default"].PAT != "old" || !strings.Contains(string(data), "# old token") || !strings.Contains(string(data), "other: 1") {
 					t.Error("existing keys or comments were lost")
 				}
 			}

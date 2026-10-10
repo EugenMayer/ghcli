@@ -1,19 +1,15 @@
 package credentials
 
 import (
-	"context"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 
-	"github.com/EugenMayer/ghcli/internal/config"
 	"github.com/EugenMayer/ghcli/pkg/keychain"
 )
 
-// candidates are tried during auto-detection. The entry names follow the conventions documented
+// candidates are tried during auto-detection of the default token. The entry names follow the conventions documented
 // in README.configuration.md, which predate pkg/keychain's DefaultCandidates.
 var candidates = []keychain.Candidate{
 	{Binary: "secret-tool", Command: "secret-tool lookup service github-pat account ghcli"},
@@ -47,35 +43,6 @@ var candidates = []keychain.Candidate{
 var tokenRe = regexp.MustCompile(`^(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]+$`)
 
 func isGitHubToken(s string) bool { return tokenRe.MatchString(s) }
-
-// Resolve loads the config and returns the token like Token. If no token is configured anywhere,
-// it auto-detects a keyring_command, saves it to the config file and tells the user via out.
-// A plain-text token in the config gets a recommendation to move it to the OS keyring.
-func Resolve(ctx context.Context, configPath string, out io.Writer) (string, Source, error) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return "", "", err
-	}
-
-	s, err := resolve(ctx, cfg, true)
-	if err != nil {
-		return "", "", err
-	}
-
-	switch s.Source {
-	case keychain.SourcePlain:
-		fmt.Fprintln(out, "ℹ "+Recommendation(ctx, SourceConfig))
-	case keychain.SourceDetected:
-		path, writeErr := config.SetKeyringCommand(configPath, s.Command)
-		if writeErr != nil {
-			fmt.Fprintf(out, "ℹ found a GitHub token via `%s`, but could not save it to the config: %v\n", s.Command, writeErr)
-		} else {
-			fmt.Fprintf(out, "ℹ no token was configured, but one was found via `%s`.\n"+
-				"  Saved it as os.keyring_command in %s, it will be used from now on.\n", s.Command, path)
-		}
-	}
-	return s.Value, source(s), nil
-}
 
 func exists(path string) bool {
 	_, err := os.Stat(path)

@@ -3,6 +3,7 @@ package keychain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -174,5 +175,20 @@ func TestResolverDetects(t *testing.T) {
 	s, err := r.Resolve(context.Background(), "jira.token")
 	if err != nil || s.Source != SourceDetected || s.Value != "tok-detected" || s.Command != "rbw get app.jira.token" {
 		t.Errorf("Resolve() = %+v, %v", s, err)
+	}
+}
+
+func TestResolverKnownKeychainErrSkipsKeychain(t *testing.T) {
+	t.Cleanup(MockInit())
+	kc := New("app")
+	_ = kc.Set("x", "from-keychain")
+
+	calls := 0
+	t.Cleanup(MockAvailability(func() error { calls++; return nil }))
+
+	known := fmt.Errorf("%w: no answer within 30s", ErrUnavailable)
+	s, err := (&Resolver{Keychain: kc, KeychainErr: known, Plain: func(string) string { return "p" }}).Resolve(context.Background(), "x")
+	if err != nil || s.Source != SourcePlain || calls != 0 {
+		t.Errorf("Resolve() = %+v, %v, keyring accessed %d times; want plain, no access", s, err, calls)
 	}
 }

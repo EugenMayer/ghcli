@@ -66,12 +66,13 @@ func runMerge(cmd *cobra.Command, opts *mergeOptions) error {
 	}
 
 	ctx := cmd.Context()
-	client, repo, err := setup(cmd)
+	s, err := setup(cmd)
 	if err != nil {
 		return err
 	}
+	client, repo := s.client, s.repo
 
-	prs, err := listOpenPRs(ctx, client, repo)
+	prs, err := s.listOpenPRs(ctx)
 	if err != nil {
 		return err
 	}

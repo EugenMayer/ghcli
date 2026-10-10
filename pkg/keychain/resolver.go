@@ -98,6 +98,10 @@ type Resolver struct {
 	Validate func(secret string) bool
 	// ProbeTimeout bounds each candidate, DefaultProbeTimeout if zero.
 	ProbeTimeout time.Duration
+	// KeychainErr, if set, is a known keyring failure (e.g. from an earlier access that timed
+	// out): the keyring is skipped and treated as failed with this error, instead of waiting for
+	// another timeout.
+	KeychainErr error
 }
 
 // DefaultEnvVar returns NAMESPACE_PATH in upper case with non-alphanumerics replaced by "_",
@@ -139,9 +143,12 @@ func (r *Resolver) Resolve(ctx context.Context, path string) (Secret, error) {
 		return Secret{Value: v, Source: SourceCommand, Command: command}, nil
 	}
 
-	v, keychainErr := r.Keychain.Get(path)
+	keychainErr := r.KeychainErr
 	if keychainErr == nil {
-		return Secret{Value: v, Source: SourceKeychain}, nil
+		var v string
+		if v, keychainErr = r.Keychain.Get(path); keychainErr == nil {
+			return Secret{Value: v, Source: SourceKeychain}, nil
+		}
 	}
 
 	if r.Plain != nil {

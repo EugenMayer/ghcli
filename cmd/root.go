@@ -43,6 +43,7 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().String("config", "", "path to config file (default ~/.ghcli/config.yml)")
 	rootCmd.PersistentFlags().StringP("repo", "R", "", "repository as owner/name (default: detected from git remote 'origin' in the current directory)")
+	rootCmd.PersistentFlags().String("alias", "", "token alias to use, usually the organization name (default: the token matching the repository owner, for auth login/logout: \"default\")")
 
 	rootCmd.AddCommand(auth.NewCmd(), pr.NewCmd())
 }

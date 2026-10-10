@@ -41,11 +41,12 @@ Each release also has a `checksums.txt` with SHA-256 sums of all binaries.
 | Command             | Description                                                          |
 |---------------------|----------------------------------------------------------------------|
 | `ghcli pr list`     | List open pull requests as a table                                   |
+| `ghcli pr label`    | Pick a label (`done` preselected), then label PRs one by one or all with ctrl+a |
 | `ghcli pr merge`    | Pick an open pull request and merge it                               |
 | `ghcli pr merge --all-done` | Merge all PRs labeled `done` one by one, waiting until each is mergeable |
-| `ghcli auth login`  | Store the GitHub token in the OS keyring                             |
-| `ghcli auth logout` | Remove the token from the OS keyring                                 |
-| `ghcli auth status` | Show the token source, its account and the API rate limit            |
+| `ghcli auth login [--alias org]`  | Store a GitHub token in the OS keyring, one per organization |
+| `ghcli auth logout [--alias org \| --all]` | Remove a token (or all) from the OS keyring  |
+| `ghcli auth status` | Show all tokens, their accounts and API rate limits, and which one the current repository uses |
 
 ```sh
 ghcli pr list
@@ -64,17 +65,24 @@ the merge only succeeds when your user may bypass the protection.
 
 ## Configuration
 
-Create a fine-grained GitHub token owned by the organization of your repositories, with
-**Pull requests** and **Contents** set to read and write. Then store it in your OS keyring, which
-is the recommended way (GNOME Keyring or KWallet on Linux, Keychain on macOS, Credential Manager
-on Windows):
-3
+ghcli needs a fine-grained GitHub token with **Pull requests**, **Contents** and **Issues** set to
+read and write (Issues is only needed for `pr label`, see the
+[permissions per command](README.configuration.md#creating-the-token)). A fine-grained token belongs to one organization (or user), so you store one token per
+organization, named after it. Store them in your OS keyring, which is the recommended way (GNOME
+Keyring or KWallet on Linux, Keychain on macOS, Credential Manager on Windows):
+
 ```sh
-ghcli auth login    # paste the token, input is hidden
-ghcli auth status   # shows the token source, keyring, account and API rate limit
+ghcli auth login --alias geek-labs   # prints a pre-filled link to create the token, then asks for it
+ghcli auth login                     # alias "default": for every other repository
+ghcli auth status                    # all tokens, and which one the current repository uses
 ```
 
-No keyring (SSH, servers, WSL), or your token is already in a password manager such as pass,
+ghcli picks the token for a repository by its owner: in `geek-labs/terraform-modules` the token
+`geek-labs` is used. If there is no token with that name, the only token or `default` is used,
+otherwise ghcli asks. `--alias` picks a token explicitly, and the `GHCLI_PAT` environment variable
+overrides everything and is used for every repository, e.g. in CI.
+
+No keyring (SSH, servers, WSL), or your tokens are already in a password manager such as pass,
 gopass, 1Password or sops? Use [`os.keyring_command`](README.configuration.md#advanced-keyring_command)
 instead. See [README.configuration.md](README.configuration.md) for creating the token, all
 supported tools and troubleshooting.
