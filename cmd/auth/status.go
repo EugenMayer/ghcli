@@ -8,6 +8,8 @@ import (
 
 	"github.com/EugenMayer/ghcli/internal/credentials"
 	gh "github.com/EugenMayer/ghcli/internal/github"
+	"github.com/EugenMayer/ghcli/pkg/keychain"
+	"github.com/EugenMayer/ghcli/pkg/keychain/keychaincmd"
 )
 
 func newStatusCmd() *cobra.Command {
@@ -21,10 +23,10 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("token:   from %s (%s)\n", source, mask(token))
+			fmt.Printf("token:   from %s (%s)\n", source, keychaincmd.Mask(token))
 
 			if backend, err := credentials.KeyringBackend(cmd.Context()); err != nil {
-				fmt.Printf("keyring: unavailable: %v\n", err)
+				fmt.Printf("keyring: unavailable: %s\n", keychain.UnavailableReason(err))
 			} else {
 				fmt.Printf("keyring: %s\n", backend)
 			}
@@ -58,11 +60,4 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func mask(token string) string {
-	if len(token) <= 8 {
-		return "****"
-	}
-	return token[:4] + "…" + token[len(token)-4:]
 }

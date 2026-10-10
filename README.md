@@ -98,3 +98,10 @@ make test     # run the tests
 ```sh
 git tag v0.0.1 && git push origin v0.0.1
 ```
+
+## Reusing the keychain in other projects
+
+The OS keyring handling is a standalone Go package, [`pkg/keychain`](pkg/keychain/README.md): store
+and fetch secrets by path, resolve them from env/commands/keyring, reference them from config
+values (`token: keychain:jira.token`) and add `secret set|get|delete|status` commands to any cobra
+CLI.

@@ -1,4 +1,4 @@
-package credentials
+package keychain
 
 import (
 	"context"
@@ -14,25 +14,24 @@ import (
 
 const secretServiceName = "org.freedesktop.secrets"
 
-// KeyringBackend describes the OS keyring ghcli uses, e.g. "GNOME Keyring (Secret Service)".
-// It returns an error if the keyring is not usable.
-func KeyringBackend(ctx context.Context) (string, error) {
-	return keyringBackend(ctx)
+// Backend describes the OS keyring in use, e.g. "GNOME Keyring (Secret Service)", "KWallet
+// (Secret Service)" or "macOS Keychain". It returns an error if the keyring is not usable.
+func (k *Keychain) Backend(ctx context.Context) (string, error) {
+	if err := k.Available(); err != nil {
+		return "", err
+	}
+	return backend(ctx)
 }
 
-// keyringBackend is replaced in tests.
-var keyringBackend = detectKeyringBackend
+// backend is replaced by MockInit.
+var backend = detectBackend
 
-func detectKeyringBackend(ctx context.Context) (string, error) {
+func detectBackend(ctx context.Context) (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
 		return "macOS Keychain", nil
 	case "windows":
 		return "Windows Credential Manager", nil
-	}
-
-	if err := keyringAvailable(); err != nil {
-		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -63,7 +62,7 @@ func detectKeyringBackend(ctx context.Context) (string, error) {
 		slices.Contains(activatable, secretServiceName) {
 		return "Secret Service (not running yet, started on first use)", nil
 	}
-	return "", fmt.Errorf("no Secret Service provider (GNOME Keyring, KWallet, KeePassXC, …) is running")
+	return "", fmt.Errorf("%w: no Secret Service provider (GNOME Keyring, KWallet, KeePassXC, …) is running", ErrUnavailable)
 }
 
 // secretServiceProvider names the program behind a Secret Service process.

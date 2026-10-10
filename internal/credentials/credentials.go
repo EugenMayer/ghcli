@@ -1,38 +1,32 @@
-// Package credentials resolves the GitHub token from the environment, a command, the OS keyring
-// or the config file, and manages the token stored in the keyring.
+// Package credentials resolves ghcli's GitHub token from GHCLI_PAT, os.keyring_command, the OS
+// keyring or the config file, built on pkg/keychain.
 package credentials
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strings"
-	"time"
-
-	"github.com/zalando/go-keyring"
 
 	"github.com/EugenMayer/ghcli/internal/config"
+	"github.com/EugenMayer/ghcli/pkg/keychain"
 )
 
 const (
 	// EnvVar overrides every other token source.
 	EnvVar = "GHCLI_PAT"
 
-	keyringService = "ghcli.github.pat"
-	keyringUser    = "ghcli"
+	// TokenPath is the token's path in the keychain: service "ghcli.github.pat", account "ghcli".
+	TokenPath = "github.pat"
 
 	// Entry used before ghcli.github.pat, migrated on first read.
-	legacyKeyringService = "ghcli"
-	legacyKeyringUser    = "github.pat"
+	legacyService = "ghcli"
+	legacyAccount = "github.pat"
 )
 
-// ErrNoToken is returned by Token when no source provides a token.
+// Keychain holds ghcli's secrets in the OS keyring.
+var Keychain = keychain.New("ghcli")
+
+// ErrNoToken is returned when no source provides a token.
 var ErrNoToken = errors.New("no GitHub token found")
 
 // Source describes where a token came from.
@@ -46,164 +40,89 @@ const (
 )
 
 // Token returns the GitHub token, trying in order: GHCLI_PAT, os.keyring_command, the OS keyring
-// and github.pat from the config.
+// and github.pat from the config. It does not auto-detect, see Resolve.
 func Token(cfg *config.Config) (string, Source, error) {
-	if t := strings.TrimSpace(os.Getenv(EnvVar)); t != "" {
-		return t, SourceEnv, nil
+	s, err := resolve(context.Background(), cfg, false)
+	if err != nil {
+		return "", "", err
+	}
+	return s.Value, source(s), nil
+}
+
+func resolve(ctx context.Context, cfg *config.Config, detect bool) (keychain.Secret, error) {
+	r := &keychain.Resolver{
+		Keychain: Keychain,
+		EnvVar:   func(string) string { return EnvVar },
+		Command:  cfg.OS.KeyringCommand,
+		Plain:    func(string) string { return cfg.GitHub.PAT },
 	}
 
-	if cfg.OS.KeyringCommand != "" {
-		// stdin is passed through so the command may prompt, e.g. for a gpg passphrase.
-		t, err := runCommand(context.Background(), cfg.OS.KeyringCommand, os.Stdin)
-		if err != nil {
-			return "", SourceCommand, fmt.Errorf("os.keyring_command: %w", err)
+	s, err := r.Resolve(ctx, TokenPath)
+	if isNotFound(err) {
+		if moved, _ := Keychain.MigrateEntry(legacyService, legacyAccount, TokenPath); moved {
+			s, err = r.Resolve(ctx, TokenPath)
 		}
-		return t, SourceCommand, nil
+	}
+	if isNotFound(err) && detect {
+		r.Candidates, r.Validate = candidates, isGitHubToken
+		s, err = r.Resolve(ctx, TokenPath)
 	}
 
-	t, keyringErr := keyringGet()
-	if keyringErr == nil {
-		return t, SourceKeyring, nil
+	var nf *keychain.NotFoundError
+	switch {
+	case errors.As(err, &nf):
+		msg := "run 'ghcli auth login' to store one in the OS keyring (recommended), " +
+			"or set " + EnvVar + " or os.keyring_command / github.pat in ~/.ghcli/config.yml"
+		if errors.Is(nf.KeychainErr, keychain.ErrUnavailable) {
+			msg += fmt.Sprintf(" (%v)", nf.KeychainErr)
+		}
+		return s, fmt.Errorf("%w: %s", ErrNoToken, msg)
+	case err != nil && cfg.OS.KeyringCommand != "":
+		return s, fmt.Errorf("os.keyring_command: %w", err)
 	}
+	return s, err
+}
 
-	if t := strings.TrimSpace(cfg.GitHub.PAT); t != "" {
-		return t, SourceConfig, nil
-	}
+func isNotFound(err error) bool {
+	var nf *keychain.NotFoundError
+	return errors.As(err, &nf)
+}
 
-	msg := "run 'ghcli auth login' to store one in the OS keyring (recommended), " +
-		"or set " + EnvVar + " or os.keyring_command / github.pat in ~/.ghcli/config.yml"
-	if !errors.Is(keyringErr, keyring.ErrNotFound) {
-		msg += fmt.Sprintf(" (OS keyring unavailable: %v)", keyringErr)
+func source(s keychain.Secret) Source {
+	switch s.Source {
+	case keychain.SourceEnv:
+		return SourceEnv
+	case keychain.SourceKeychain:
+		return SourceKeyring
+	case keychain.SourcePlain:
+		return SourceConfig
+	default: // SourceCommand, SourceDetected
+		return SourceCommand
 	}
-	return "", "", fmt.Errorf("%w: %s", ErrNoToken, msg)
 }
 
 // Store saves the token in the OS keyring.
 func Store(token string) error {
-	if err := keyringAvailable(); err != nil {
-		return fmt.Errorf("storing token in the OS keyring: %w", err)
-	}
-	if err := keyring.Set(keyringService, keyringUser, token); err != nil {
+	if err := Keychain.Set(TokenPath, token); err != nil {
 		return fmt.Errorf("storing token in the OS keyring: %w", err)
 	}
 	return nil
 }
 
-// Delete removes the token from the OS keyring. It reports false if no token was stored.
+// Delete removes the token, including a legacy entry, from the OS keyring. It reports false if no
+// token was stored.
 func Delete() (bool, error) {
-	if err := keyringAvailable(); err != nil {
+	deleted, err := Keychain.Delete(TokenPath)
+	if err != nil {
 		return false, fmt.Errorf("removing token from the OS keyring: %w", err)
 	}
-	deleted := false
-	for _, entry := range [][2]string{{keyringService, keyringUser}, {legacyKeyringService, legacyKeyringUser}} {
-		err := keyring.Delete(entry[0], entry[1])
-		if errors.Is(err, keyring.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return deleted, fmt.Errorf("removing token from the OS keyring: %w", err)
-		}
+	if legacy, err := Keychain.DeleteEntry(legacyService, legacyAccount); err == nil && legacy {
 		deleted = true
 	}
 	return deleted, nil
 }
 
-// keyringTimeout bounds a keyring lookup. It is generous, as the desktop may show an unlock prompt.
-const keyringTimeout = 30 * time.Second
-
-func keyringGet() (string, error) {
-	if err := keyringAvailable(); err != nil {
-		return "", err
-	}
-
-	t, err := keyringGetEntry(keyringService, keyringUser)
-	if !errors.Is(err, keyring.ErrNotFound) {
-		return t, err
-	}
-
-	// Move a token stored under the legacy entry; keep the legacy one if that fails.
-	t, err = keyringGetEntry(legacyKeyringService, legacyKeyringUser)
-	if err != nil {
-		return "", err
-	}
-	if keyring.Set(keyringService, keyringUser, t) == nil {
-		_ = keyring.Delete(legacyKeyringService, legacyKeyringUser)
-	}
-	return t, nil
-}
-
-// keyringGetEntry reads one keyring entry, giving up after keyringTimeout.
-func keyringGetEntry(service, user string) (string, error) {
-	type result struct {
-		token string
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		t, err := keyring.Get(service, user)
-		done <- result{t, err}
-	}()
-
-	var t string
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return "", r.err
-		}
-		t = r.token
-	case <-time.After(keyringTimeout):
-		return "", fmt.Errorf("no answer within %s", keyringTimeout)
-	}
-	if t = strings.TrimSpace(t); t == "" {
-		return "", keyring.ErrNotFound
-	}
-	return t, nil
-}
-
-// keyringAvailable reports why the OS keyring can't be used, or nil. On Linux the Secret Service
-// is reached via the D-Bus session bus. Without one, the D-Bus library would launch a new bus whose
-// keyring is locked and can't show an unlock prompt, which blocks forever (SSH, servers, WSL).
-// Replaced in tests.
-var keyringAvailable = func() error {
-	if runtime.GOOS != "linux" {
-		return nil
-	}
-	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
-		return nil
-	}
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		if _, err := os.Stat(filepath.Join(dir, "bus")); err == nil {
-			return nil
-		}
-	}
-	return errors.New("no D-Bus session bus (DBUS_SESSION_BUS_ADDRESS is not set)")
-}
-
-// runCommand runs command in the shell and returns its trimmed output.
-func runCommand(ctx context.Context, command string, stdin io.Reader) (string, error) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	// Children of the shell may keep stdout open after a timeout kill; don't wait for them forever.
-	cmd.WaitDelay = time.Second
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	cmd.Stdin = stdin
-	out, err := cmd.Output()
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("%q failed: %w: %s", command, err, msg)
-		}
-		return "", fmt.Errorf("%q failed: %w", command, err)
-	}
-
-	t := strings.TrimSpace(string(out))
-	if t == "" {
-		return "", fmt.Errorf("%q printed no token", command)
-	}
-	return t, nil
+// KeyringBackend describes the OS keyring in use, e.g. "GNOME Keyring (Secret Service)".
+func KeyringBackend(ctx context.Context) (string, error) {
+	return Keychain.Backend(ctx)
 }

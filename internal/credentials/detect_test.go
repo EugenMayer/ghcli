@@ -8,13 +8,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/EugenMayer/ghcli/internal/config"
 )
 
 // fakeEnv isolates HOME and PATH and installs fake binaries: name -> shell script body.
-// sh, head and sleep stay usable, as candidate commands are run through the shell.
 func fakeEnv(t *testing.T, binaries map[string]string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -28,13 +26,14 @@ func fakeEnv(t *testing.T, binaries map[string]string) string {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range []string{"sh", "head", "sleep"} {
-		path, err := lookPathIn(tool, os.Getenv("PATH"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
-			t.Fatal(err)
+	for _, tool := range []string{"sh", "head"} {
+		for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+			if _, err := os.Stat(filepath.Join(dir, tool)); err == nil {
+				if err := os.Symlink(filepath.Join(dir, tool), filepath.Join(bin, tool)); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
 		}
 	}
 	for name, body := range binaries {
@@ -49,59 +48,11 @@ func fakeEnv(t *testing.T, binaries map[string]string) string {
 	return home
 }
 
-func lookPathIn(name, path string) (string, error) {
-	for _, dir := range filepath.SplitList(path) {
-		p := filepath.Join(dir, name)
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			return p, nil
-		}
-	}
-	return "", os.ErrNotExist
-}
-
-func TestDetect(t *testing.T) {
-	home := fakeEnv(t, map[string]string{
-		"secret-tool": "exit 1",                                  // installed, but no entry
-		"gopass":      "echo 'not a token'",                      // prints something that is no token
-		"pass":        "printf 'ghp_fromPass123\\nlogin: me\\n'", // not ready: no store entry yet
-		"rbw":         "echo github_pat_fromRbw_123",
-	})
-
-	command, token, ok := Detect(context.Background())
-	if !ok || command != "rbw get ghcli" || token != "github_pat_fromRbw_123" {
-		t.Fatalf("Detect() = %q, %q, %v", command, token, ok)
-	}
-
-	// once the pass entry exists, pass comes first
-	if err := os.MkdirAll(filepath.Join(home, ".password-store", "github"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".password-store", "github", "ghcli.gpg"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	command, token, ok = Detect(context.Background())
-	if !ok || command != "pass show github/ghcli | head -n 1" || token != "ghp_fromPass123" {
-		t.Fatalf("Detect() = %q, %q, %v", command, token, ok)
-	}
-}
-
-func TestDetectTimeout(t *testing.T) {
-	fakeEnv(t, map[string]string{"secret-tool": "sleep 5; echo ghp_late"})
-	old := probeTimeout
-	probeTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { probeTimeout = old })
-
-	start := time.Now()
-	if _, _, ok := Detect(context.Background()); ok {
-		t.Error("expected no detection for a hanging command")
-	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Errorf("Detect took %s, timeout not applied", d)
-	}
-}
-
 func TestResolveDetectsAndSaves(t *testing.T) {
-	home := fakeEnv(t, map[string]string{"secret-tool": "echo github_pat_fromKeyring_1"})
+	home := fakeEnv(t, map[string]string{
+		"gopass":      "echo 'not a token'", // rejected: no GitHub token format
+		"secret-tool": "echo github_pat_fromKeyring_1",
+	})
 	configPath := filepath.Join(home, ".ghcli", "config.yml")
 
 	var out bytes.Buffer
@@ -126,6 +77,25 @@ func TestResolveDetectsAndSaves(t *testing.T) {
 	}
 }
 
+func TestResolveDetectsPassOnlyWithEntry(t *testing.T) {
+	home := fakeEnv(t, map[string]string{"pass": "printf 'ghp_fromPass123\\nlogin: me\\n'"})
+
+	if _, _, err := Resolve(context.Background(), "", &bytes.Buffer{}); err == nil {
+		t.Fatal("pass without github/ghcli entry must not be detected")
+	}
+
+	if err := os.MkdirAll(filepath.Join(home, ".password-store", "github"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".password-store", "github", "ghcli.gpg"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := Resolve(context.Background(), "", &bytes.Buffer{})
+	if err != nil || token != "ghp_fromPass123" {
+		t.Errorf("Resolve() = %q, %v", token, err)
+	}
+}
+
 func TestResolveNothingFound(t *testing.T) {
 	home := fakeEnv(t, nil)
 
@@ -137,7 +107,7 @@ func TestResolveNothingFound(t *testing.T) {
 	}
 }
 
-func TestResolveConfiguredSourceSkipsDetection(t *testing.T) {
+func TestResolvePlainTextRecommendsKeyring(t *testing.T) {
 	home := fakeEnv(t, map[string]string{"secret-tool": "echo github_pat_detected_1"})
 	configPath := filepath.Join(home, "config.yml")
 	if err := os.WriteFile(configPath, []byte("github:\n  pat: ghp_plain\n"), 0o600); err != nil {
@@ -149,7 +119,6 @@ func TestResolveConfiguredSourceSkipsDetection(t *testing.T) {
 	if err != nil || token != "ghp_plain" || source != SourceConfig {
 		t.Errorf("Resolve() = %q, %q, %v", token, source, err)
 	}
-	// plain text: no detection, but the keyring is recommended
 	if got := out.String(); strings.Contains(got, "found via") ||
 		!strings.Contains(got, "'ghcli auth login' to store it in Mock Keyring") {
 		t.Errorf("unexpected output %q", got)

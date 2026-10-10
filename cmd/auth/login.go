@@ -1,16 +1,12 @@
 package auth
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/EugenMayer/ghcli/internal/credentials"
+	"github.com/EugenMayer/ghcli/pkg/keychain/keychaincmd"
 )
 
 func newLoginCmd() *cobra.Command {
@@ -22,8 +18,8 @@ func newLoginCmd() *cobra.Command {
 		Example: `  ghcli auth login
   pass show github/ghcli | ghcli auth login --with-token`,
 		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			token, err := readToken(withToken)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			token, err := keychaincmd.ReadSecret(cmd.InOrStdin(), cmd.ErrOrStderr(), "GitHub token: ", withToken)
 			if err != nil {
 				return err
 			}
@@ -38,29 +34,4 @@ func newLoginCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&withToken, "with-token", false, "read the token from standard input")
 
 	return cmd
-}
-
-func readToken(fromStdin bool) (string, error) {
-	var token string
-	if fromStdin || !term.IsTerminal(int(os.Stdin.Fd())) {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			return "", fmt.Errorf("reading token from standard input: %w", err)
-		}
-		token = line
-	} else {
-		fmt.Fprint(os.Stderr, "GitHub token: ")
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return "", fmt.Errorf("reading token: %w", err)
-		}
-		token = string(b)
-	}
-
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", errors.New("no token given")
-	}
-	return token, nil
 }

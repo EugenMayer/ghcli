@@ -3,7 +3,12 @@ package credentials
 import (
 	"context"
 	"fmt"
+
+	"github.com/EugenMayer/ghcli/pkg/keychain"
 )
+
+// keyringBackend is replaced in tests.
+var keyringBackend = KeyringBackend
 
 // Recommendation returns a hint to move the token into the OS keyring, the recommended storage,
 // or "" if there is nothing to recommend for source. GHCLI_PAT is left alone, as it is meant for
@@ -13,11 +18,11 @@ func Recommendation(ctx context.Context, source Source) string {
 		return ""
 	}
 
-	backend, err := KeyringBackend(ctx)
+	backend, err := keyringBackend(ctx)
 	if err != nil {
 		if source == SourceConfig {
-			return fmt.Sprintf("the token is stored in plain text in the config. As the OS keyring is unavailable (%v), "+
-				"consider keeping it in a secret manager via os.keyring_command, see README.configuration.md.", err)
+			return fmt.Sprintf("the token is stored in plain text in the config. As the OS keyring is unavailable (%s), "+
+				"consider keeping it in a secret manager via os.keyring_command, see README.configuration.md.", keychain.UnavailableReason(err))
 		}
 		return ""
 	}
