@@ -17,10 +17,6 @@ const (
 
 	// TokenPath is the token's path in the keychain: service "ghcli.github.pat", account "ghcli".
 	TokenPath = "github.pat"
-
-	// Entry used before ghcli.github.pat, migrated on first read.
-	legacyService = "ghcli"
-	legacyAccount = "github.pat"
 )
 
 // Keychain holds ghcli's secrets in the OS keyring.
@@ -49,6 +45,8 @@ func Token(cfg *config.Config) (string, Source, error) {
 	return s.Value, source(s), nil
 }
 
+// resolve looks the token up in the order GHCLI_PAT, os.keyring_command, OS keyring, github.pat
+// and, if detect is set, auto-detection.
 func resolve(ctx context.Context, cfg *config.Config, detect bool) (keychain.Secret, error) {
 	r := &keychain.Resolver{
 		Keychain: Keychain,
@@ -56,18 +54,11 @@ func resolve(ctx context.Context, cfg *config.Config, detect bool) (keychain.Sec
 		Command:  cfg.OS.KeyringCommand,
 		Plain:    func(string) string { return cfg.GitHub.PAT },
 	}
+	if detect {
+		r.Candidates, r.Validate = candidates, isGitHubToken
+	}
 
 	s, err := r.Resolve(ctx, TokenPath)
-	if isNotFound(err) {
-		if moved, _ := Keychain.MigrateEntry(legacyService, legacyAccount, TokenPath); moved {
-			s, err = r.Resolve(ctx, TokenPath)
-		}
-	}
-	if isNotFound(err) && detect {
-		r.Candidates, r.Validate = candidates, isGitHubToken
-		s, err = r.Resolve(ctx, TokenPath)
-	}
-
 	var nf *keychain.NotFoundError
 	switch {
 	case errors.As(err, &nf):
@@ -81,11 +72,6 @@ func resolve(ctx context.Context, cfg *config.Config, detect bool) (keychain.Sec
 		return s, fmt.Errorf("os.keyring_command: %w", err)
 	}
 	return s, err
-}
-
-func isNotFound(err error) bool {
-	var nf *keychain.NotFoundError
-	return errors.As(err, &nf)
 }
 
 func source(s keychain.Secret) Source {
@@ -109,15 +95,11 @@ func Store(token string) error {
 	return nil
 }
 
-// Delete removes the token, including a legacy entry, from the OS keyring. It reports false if no
-// token was stored.
+// Delete removes the token from the OS keyring. It reports false if no token was stored.
 func Delete() (bool, error) {
 	deleted, err := Keychain.Delete(TokenPath)
 	if err != nil {
 		return false, fmt.Errorf("removing token from the OS keyring: %w", err)
-	}
-	if legacy, err := Keychain.DeleteEntry(legacyService, legacyAccount); err == nil && legacy {
-		deleted = true
 	}
 	return deleted, nil
 }

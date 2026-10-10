@@ -76,50 +76,7 @@ func (k *Keychain) Get(path string) (string, error) {
 		return "", err
 	}
 	service, account := k.Entry(path)
-	return k.GetEntry(service, account)
-}
 
-// Set stores secret at path, replacing an existing one.
-func (k *Keychain) Set(path, secret string) error {
-	if err := ValidatePath(path); err != nil {
-		return err
-	}
-	if strings.TrimSpace(secret) == "" {
-		return errors.New("refusing to store an empty secret")
-	}
-	service, account := k.Entry(path)
-	return k.SetEntry(service, account, secret)
-}
-
-// Delete removes the secret at path. It reports false if nothing was stored.
-func (k *Keychain) Delete(path string) (bool, error) {
-	if err := ValidatePath(path); err != nil {
-		return false, err
-	}
-	service, account := k.Entry(path)
-	return k.DeleteEntry(service, account)
-}
-
-// MigrateEntry moves a secret stored under a raw service/account, e.g. by an older version of
-// the program, to path. It reports whether something was moved. If storing at path fails, the
-// old entry is kept.
-func (k *Keychain) MigrateEntry(service, account, path string) (bool, error) {
-	secret, err := k.GetEntry(service, account)
-	if errors.Is(err, ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := k.Set(path, secret); err != nil {
-		return false, err
-	}
-	_, _ = k.DeleteEntry(service, account)
-	return true, nil
-}
-
-// GetEntry reads a raw keyring entry. Prefer Get.
-func (k *Keychain) GetEntry(service, account string) (string, error) {
 	var secret string
 	err := k.do(func() error {
 		var err error
@@ -135,13 +92,24 @@ func (k *Keychain) GetEntry(service, account string) (string, error) {
 	return secret, nil
 }
 
-// SetEntry writes a raw keyring entry. Prefer Set.
-func (k *Keychain) SetEntry(service, account, secret string) error {
+// Set stores secret at path, replacing an existing one.
+func (k *Keychain) Set(path, secret string) error {
+	if err := ValidatePath(path); err != nil {
+		return err
+	}
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("refusing to store an empty secret")
+	}
+	service, account := k.Entry(path)
 	return k.do(func() error { return keyring.Set(service, account, secret) })
 }
 
-// DeleteEntry removes a raw keyring entry, reporting false if it didn't exist. Prefer Delete.
-func (k *Keychain) DeleteEntry(service, account string) (bool, error) {
+// Delete removes the secret at path. It reports false if nothing was stored.
+func (k *Keychain) Delete(path string) (bool, error) {
+	if err := ValidatePath(path); err != nil {
+		return false, err
+	}
+	service, account := k.Entry(path)
 	err := k.do(func() error { return keyring.Delete(service, account) })
 	if errors.Is(err, ErrNotFound) {
 		return false, nil

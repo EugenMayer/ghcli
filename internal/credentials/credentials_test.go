@@ -87,35 +87,29 @@ func TestTokenKeyringUnavailable(t *testing.T) {
 	}
 }
 
-func TestKeyringLegacyMigration(t *testing.T) {
-	mockKeyring(t)
-	t.Setenv(EnvVar, "")
+func TestUnresponsiveKeyringIsAccessedOnce(t *testing.T) {
+	fakeEnv(t, nil) // isolated PATH: auto-detection finds no tools
 
-	if err := keyring.Set(legacyService, legacyAccount, "from-legacy"); err != nil {
-		t.Fatal(err)
-	}
+	// a keyring that times out or fails is reported as unavailable on every access
+	calls := 0
+	t.Cleanup(keychain.MockAvailability(func() error {
+		calls++
+		return errors.New("no answer within 30s")
+	}))
 
-	token, source, err := Token(cfg("", ""))
-	if err != nil || token != "from-legacy" || source != SourceKeyring {
-		t.Fatalf("Token() = %q, %q, %v", token, source, err)
-	}
-	if got, err := keyring.Get("ghcli.github.pat", "ghcli"); err != nil || got != "from-legacy" {
-		t.Errorf("new entry = %q, %v; want migrated token", got, err)
-	}
-	if _, err := keyring.Get(legacyService, legacyAccount); err == nil {
-		t.Error("legacy entry should be removed after migration")
-	}
-
-	// logout removes a leftover legacy entry too
-	_ = keyring.Set(legacyService, legacyAccount, "leftover")
-	if deleted, err := Delete(); err != nil || !deleted {
-		t.Fatalf("Delete() = %v, %v", deleted, err)
-	}
-	for _, e := range [][2]string{{"ghcli.github.pat", "ghcli"}, {legacyService, legacyAccount}} {
-		if _, err := keyring.Get(e[0], e[1]); err == nil {
-			t.Errorf("entry %v still present after Delete", e)
+	for name, c := range map[string]*config.Config{"no token": cfg("", ""), "plain text": cfg("from-config", "")} {
+		calls = 0
+		_, _, _ = resolveForTest(c)
+		if calls != 1 {
+			t.Errorf("%s: keyring accessed %d times, want 1", name, calls)
 		}
 	}
+}
+
+// resolveForTest resolves with auto-detection, like every ghcli command does.
+func resolveForTest(c *config.Config) (keychain.Secret, Source, error) {
+	s, err := resolve(context.Background(), c, true)
+	return s, source(s), err
 }
 
 func TestTokenCommandErrors(t *testing.T) {

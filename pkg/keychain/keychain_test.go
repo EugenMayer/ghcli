@@ -53,26 +53,6 @@ func TestValidatePath(t *testing.T) {
 	}
 }
 
-func TestMigrateEntry(t *testing.T) {
-	t.Cleanup(MockInit())
-	kc := New("app")
-
-	if moved, err := kc.MigrateEntry("old", "token", "github.pat"); err != nil || moved {
-		t.Errorf("MigrateEntry() without old entry = %v, %v", moved, err)
-	}
-
-	_ = keyring.Set("old", "token", "legacy")
-	if moved, err := kc.MigrateEntry("old", "token", "github.pat"); err != nil || !moved {
-		t.Fatalf("MigrateEntry() = %v, %v", moved, err)
-	}
-	if got, _ := kc.Get("github.pat"); got != "legacy" {
-		t.Errorf("migrated secret = %q", got)
-	}
-	if _, err := keyring.Get("old", "token"); err == nil {
-		t.Error("old entry should be removed")
-	}
-}
-
 func TestUnavailable(t *testing.T) {
 	t.Cleanup(MockInit())
 	old := available

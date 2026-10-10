@@ -20,7 +20,14 @@ func MockInit() (restore func()) {
 // MockUnavailable makes the OS keyring unavailable with reason, e.g. to test fallbacks. The
 // returned function restores the previous state.
 func MockUnavailable(reason error) (restore func()) {
+	return MockAvailability(func() error { return reason })
+}
+
+// MockAvailability replaces the availability check that runs before every keyring operation:
+// a non-nil error makes the keyring unavailable. Counting its calls tells how often a program
+// accesses the keyring. The returned function restores the previous check.
+func MockAvailability(check func() error) (restore func()) {
 	oldAvailable := available
-	available = func() error { return reason }
+	available = check
 	return func() { available = oldAvailable }
 }
