@@ -65,8 +65,8 @@ the merge only succeeds when your user may bypass the protection.
 
 ## Configuration
 
-ghcli needs a fine-grained GitHub token with **Pull requests**, **Contents** and **Issues** set to
-read and write (Issues is only needed for `pr label`, see the
+ghcli needs a fine-grained GitHub token with **Pull requests** and **Contents** set to read and
+write. Pull requests must be **write** for `pr label` and `pr merge`, read is not enough (see the
 [permissions per command](README.configuration.md#creating-the-token)). A fine-grained token belongs to one organization (or user), so you store one token per
 organization, named after it. Store them in your OS keyring, which is the recommended way (GNOME
 Keyring or KWallet on Linux, Keychain on macOS, Credential Manager on Windows):

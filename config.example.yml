@@ -9,8 +9,8 @@
 # A repository uses the token whose alias is its owner (geek-labs/... -> geek-labs), else the only
 # token or "default". The GHCLI_PAT environment variable overrides everything, for every repository.
 #
-# Token permissions: "Pull requests: read & write", "Contents: read & write" (pr merge) and
-# "Issues: read & write" (pr label), with the organization as resource owner.
+# Token permissions: "Pull requests: read & write" (write is needed by pr label and pr merge) and
+# "Contents: read & write" (pr merge), with the organization as resource owner.
 #
 # Only uncomment the settings below for special cases.
 

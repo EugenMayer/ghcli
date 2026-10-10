@@ -2,6 +2,7 @@ package pr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -11,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/go-github/v92/github"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -28,8 +30,8 @@ In the list, enter labels the selected pull request and removes it from the list
 applied in the background. ctrl+a labels all remaining pull requests. q or esc quits once the
 pending labels are applied, ctrl+c twice aborts.
 
-The token needs the repository permissions "Issues: read and write" (GitHub manages pull request
-labels through the Issues API) and "Pull requests: read".`,
+Adding labels to pull requests needs the repository permission "Pull requests: read and write";
+read is not enough.`,
 		Args: cobra.NoArgs,
 		RunE: runLabel,
 	}
@@ -71,11 +73,8 @@ func runLabel(cmd *cobra.Command, _ []string) error {
 	}
 
 	apply := func(ctx context.Context, number int) error {
-		_, resp, err := client.Issues.AddLabelsToIssue(ctx, repo.Owner, repo.Name, number, []string{label})
-		if err != nil {
-			return fmt.Errorf("%w%s", err, issuesPermissionHint(resp))
-		}
-		return nil
+		_, _, err := client.Issues.AddLabelsToIssue(ctx, repo.Owner, repo.Name, number, []string{label})
+		return labelsAPIError(err)
 	}
 	final, err := tea.NewProgram(newLabelModel(ctx, repo, label, unlabeled, apply), tea.WithContext(ctx)).Run()
 	if err != nil {
@@ -90,7 +89,7 @@ func listLabels(ctx context.Context, client *github.Client, repo gh.Repo) ([]*gi
 	for {
 		labels, resp, err := client.Issues.ListLabels(ctx, repo.Owner, repo.Name, opts)
 		if err != nil {
-			return nil, fmt.Errorf("listing labels of %s: %w%s", repo, err, issuesPermissionHint(resp))
+			return nil, fmt.Errorf("listing labels of %s: %w", repo, labelsAPIError(err))
 		}
 		all = append(all, labels...)
 		if resp.NextPage == 0 {
@@ -100,12 +99,45 @@ func listLabels(ctx context.Context, client *github.Client, repo gh.Repo) ([]*gi
 	}
 }
 
-// issuesPermissionHint explains a 403 from the labels API, which needs the Issues permission.
-func issuesPermissionHint(resp *github.Response) string {
-	if resp == nil || resp.StatusCode != http.StatusForbidden {
-		return ""
+// labelsAPIError shortens an error of the labels API to status and message, e.g. "403 Resource not
+// accessible by personal access token", and explains a 403 with the permission GitHub asks for.
+func labelsAPIError(err error) error {
+	var ghErr *github.ErrorResponse
+	if !errors.As(err, &ghErr) || ghErr.Response == nil {
+		return err
 	}
-	return ` (the token needs the repository permission "Issues: read and write" for labels)`
+	msg := fmt.Sprintf("%d %s", ghErr.Response.StatusCode, ghErr.Message)
+	if ghErr.Response.StatusCode == http.StatusForbidden {
+		// GitHub names the permissions that would allow the request.
+		if accepted := ghErr.Response.Header.Get("X-Accepted-GitHub-Permissions"); accepted != "" {
+			msg += " (the token needs " + describeAcceptedPermissions(accepted) + `; set "Pull requests" to "Read and write")`
+		} else {
+			msg += ` (the token needs the repository permission "Pull requests: read and write")`
+		}
+	}
+	return errors.New(msg)
+}
+
+// describeAcceptedPermissions turns GitHub's X-Accepted-GitHub-Permissions header into text. The
+// header lists alternative permission sets separated by ";", the permissions of a set by ",":
+// "issues=write; pull_requests=write" means either one is enough.
+func describeAcceptedPermissions(header string) string {
+	var sets []string
+	for _, set := range strings.Split(header, ";") {
+		var perms []string
+		for _, p := range strings.Split(set, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				perms = append(perms, p)
+			}
+		}
+		if len(perms) > 0 {
+			sets = append(sets, strings.Join(perms, " and "))
+		}
+	}
+	if len(sets) == 1 {
+		return sets[0]
+	}
+	return "one of: " + strings.Join(sets, ", or ")
 }
 
 // selectLabel lets the user pick a label, with the cursor on the done label if it exists.
@@ -161,6 +193,7 @@ type labelModel struct {
 	cursor    int
 	offset    int // first visible row
 	height    int // terminal height, 0 until known
+	width     int // terminal width, 0 until known
 
 	queue    []*github.PullRequest
 	inFlight *github.PullRequest
@@ -200,7 +233,7 @@ func (m *labelModel) Init() tea.Cmd { return nil }
 func (m *labelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.height = msg.Height
+		m.height, m.width = msg.Height, msg.Width
 		m.scroll()
 
 	case tea.KeyPressMsg:
@@ -335,8 +368,8 @@ func (m *labelModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(fmt.Sprintf("Label pull requests of %s with %q", m.repo, m.label)) + "\n")
-	b.WriteString(styleHelp.Render("↑/↓ move · enter label · ctrl+a label all · q quit") + "\n\n")
+	b.WriteString(m.fit(styleTitle.Render(fmt.Sprintf("Label pull requests of %s with %q", m.repo, m.label))) + "\n")
+	b.WriteString(m.fit(styleHelp.Render("↑/↓ move · enter label · ctrl+a label all · q quit")) + "\n\n")
 
 	if len(m.remaining) == 0 {
 		b.WriteString(styleHelp.Render("  no unlabeled pull requests left") + "\n")
@@ -348,10 +381,11 @@ func (m *labelModel) View() tea.View {
 			line += styleErr.Render(fmt.Sprintf("  (failed: %v)", err))
 		}
 		if i == m.cursor {
-			b.WriteString(styleCursor.Render("› "+line) + "\n")
+			line = styleCursor.Render("› " + line)
 		} else {
-			b.WriteString("  " + line + "\n")
+			line = "  " + line
 		}
+		b.WriteString(m.fit(line) + "\n")
 	}
 	if hidden := len(m.remaining) - end; hidden > 0 {
 		b.WriteString(styleHelp.Render(fmt.Sprintf("  … %d more", hidden)) + "\n")
@@ -359,7 +393,7 @@ func (m *labelModel) View() tea.View {
 
 	b.WriteString("\n")
 	for _, msg := range m.messages {
-		b.WriteString(msg + "\n")
+		b.WriteString(m.wrap(msg) + "\n")
 	}
 	if m.inFlight != nil {
 		status := fmt.Sprintf("… labeling #%d", m.inFlight.GetNumber())
@@ -369,9 +403,25 @@ func (m *labelModel) View() tea.View {
 		if m.quitting {
 			status += " (quitting when done, ctrl+c to abort)"
 		}
-		b.WriteString(styleHelp.Render(status) + "\n")
+		b.WriteString(m.wrap(styleHelp.Render(status)) + "\n")
 	}
 	return tea.NewView(b.String())
+}
+
+// fit cuts a line to the terminal width, so it isn't clipped mid-way by the terminal.
+func (m *labelModel) fit(line string) string {
+	if m.width <= 0 {
+		return line
+	}
+	return ansi.Truncate(line, m.width, "…")
+}
+
+// wrap breaks a message into lines of the terminal width, so long errors stay readable.
+func (m *labelModel) wrap(msg string) string {
+	if m.width <= 0 {
+		return msg
+	}
+	return lipgloss.Wrap(msg, m.width, " ")
 }
 
 // summary prints the result and returns an error if pull requests could not be labeled.

@@ -28,14 +28,14 @@ To create the token by hand, use
 
   | Permission    | Access         | Command | Needed for |
   |---------------|----------------|---------|------------|
-  | Pull requests | Read and write | `pr list`, `pr label`, `pr merge` | Listing open PRs (read), updating branches that are behind before a merge (write) |
+  | Pull requests | Read and write | `pr list` (read), `pr label`, `pr merge` (write) | Listing open PRs (read); adding labels to PRs and updating branches that are behind before a merge (write) |
   | Contents      | Read and write | `pr merge` | Merging |
-  | Issues        | Read and write | `pr label` | Listing the repository's labels (read) and adding a label to a PR (write); GitHub manages PR labels through the Issues API |
   | Metadata      | Read-only      | all | Added automatically |
   | Workflows     | Read and write | `pr merge` | Optional: only for PRs that change `.github/workflows/` |
 
-  If you only use some commands, the permissions in their rows are enough, e.g. Pull requests
-  (read) for `pr list`.
+  **Pull requests must be write for `pr label`:** labels on pull requests need it. Issues: write is
+  not needed and does not replace it. If you only use some commands, the permissions in their rows
+  are enough, e.g. Pull requests (read) for `pr list`.
 
 If the organization requires approval for fine-grained tokens, an org owner has to approve the
 token before it works.
@@ -191,7 +191,8 @@ ghcli uses the first token it finds, in this order:
 | `404 Not Found` when listing PRs           | The token can't see the repository: wrong resource owner, repository not selected, or token not yet approved. Store a token for the organization with `ghcli auth login --alias <org>` |
 | `several tokens exist (…), none with an alias matching …` | No token is named after the repository owner and there is no `default`: pass `--alias`, or run interactively to choose |
 | `403 Resource not accessible by personal access token` | A permission from [Creating the token](#creating-the-token) is missing |
-| `403` with "needs the repository permission Issues" in `pr label` | Add **Issues: read and write** to the token; GitHub manages PR labels through the Issues API |
+| `403 Resource not accessible by personal access token (the token needs …)` in `pr label` | Set **Pull requests** to **Read and write** on the token; read is not enough to add labels |
+| `403 … (the token needs …)` in other commands | Add the permission GitHub names to the token. If the token already has it, ghcli uses a different token (check `ghcli auth status` and `GHCLI_PAT`), or the changed permissions still wait for the organization's approval |
 | `403 API rate limit exceeded for user ID …` | Your account is out of API requests. All your tokens and tools share this limit; wait for the reset |
 | `401 Bad credentials`                      | The token is wrong or expired. Check with `ghcli auth status` which source is used |
 | `OS keyring unavailable: …dbus…`           | No Secret Service running (SSH, server, WSL): use `GHCLI_PAT`, `os.keyring_command` or `github.<alias>.pat` |

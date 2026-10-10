@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/go-github/v92/github"
 
 	gh "github.com/EugenMayer/ghcli/internal/github"
@@ -252,13 +254,53 @@ func TestLabelProgram(t *testing.T) {
 	}
 }
 
-func TestIssuesPermissionHint(t *testing.T) {
-	forbidden := &github.Response{Response: &http.Response{StatusCode: http.StatusForbidden}}
-	if hint := issuesPermissionHint(forbidden); !strings.Contains(hint, "Issues: read and write") {
-		t.Errorf("403: hint = %q", hint)
+func TestLabelsAPIError(t *testing.T) {
+	forbidden := func(accepted string) error {
+		resp := &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Request: &http.Request{Method: "POST", URL: &url.URL{Path: "/x"}}}
+		if accepted != "" {
+			resp.Header.Set("X-Accepted-GitHub-Permissions", accepted)
+		}
+		return &github.ErrorResponse{Response: resp, Message: "Resource not accessible by personal access token"}
 	}
-	notFound := &github.Response{Response: &http.Response{StatusCode: http.StatusNotFound}}
-	if hint := issuesPermissionHint(notFound) + issuesPermissionHint(nil); hint != "" {
-		t.Errorf("other status: hint = %q", hint)
+
+	if got := labelsAPIError(forbidden("pull_requests=write")).Error(); got != "403 Resource not accessible by personal access token (the token needs pull_requests=write; set \"Pull requests\" to \"Read and write\")" {
+		t.Errorf("with header: %q", got)
+	}
+	if got := labelsAPIError(forbidden("")).Error(); !strings.Contains(got, "403 Resource not accessible") || !strings.Contains(got, "the token needs") {
+		t.Errorf("without header: %q", got)
+	}
+	if labelsAPIError(nil) != nil {
+		t.Error("nil error must stay nil")
+	}
+}
+
+func TestLabelViewFitsWidth(t *testing.T) {
+	prs := testPRs(1)
+	m := newLabelModel(context.Background(), gh.Repo{Owner: "o", Name: "r"}, "done", prs, nil)
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
+	m.failed[1] = errors.New(strings.Repeat("long error ", 10))
+	m.message(strings.Repeat("word ", 30))
+
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Errorf("line is %d wide, want <= 40: %q", w, line)
+		}
+	}
+	if !strings.Contains(m.View().Content, "word word") {
+		t.Error("message lost instead of wrapped")
+	}
+}
+
+func TestDescribeAcceptedPermissions(t *testing.T) {
+	cases := map[string]string{
+		"contents=read":                                               "contents=read",
+		"pull_requests=write,contents=read":                           "pull_requests=write and contents=read",
+		"issues=write; pull_requests=write":                           "one of: issues=write, or pull_requests=write",
+		"pull_requests=read,contents=read; issues=read,contents=read": "one of: pull_requests=read and contents=read, or issues=read and contents=read",
+	}
+	for in, want := range cases {
+		if got := describeAcceptedPermissions(in); got != want {
+			t.Errorf("describeAcceptedPermissions(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

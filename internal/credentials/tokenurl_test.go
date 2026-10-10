@@ -16,13 +16,16 @@ func TestTokenURL(t *testing.T) {
 	}
 	want := map[string]string{
 		"name": "ghcli geek-labs", "target_name": "geek-labs", "expires_in": "90",
-		"pull_requests": "write", "contents": "write", "issues": "write",
+		"pull_requests": "write", "contents": "write",
 	}
 	q := u.Query()
 	for k, v := range want {
 		if got := q.Get(k); got != v {
 			t.Errorf("%s = %q, want %q", k, got, v)
 		}
+	}
+	if q.Has("issues") {
+		t.Error("issues is not needed: pull_requests=write covers labels on PRs")
 	}
 	if q.Has("workflows") {
 		t.Error("workflows must only be requested with --workflows")

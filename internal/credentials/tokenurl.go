@@ -16,9 +16,8 @@ type Permission struct {
 // Permissions are the repository permissions ghcli's commands need. Metadata (read) is added by
 // GitHub automatically.
 var Permissions = []Permission{
-	{Name: "pull_requests", Access: "write", For: "pr list, pr label, pr merge"},
+	{Name: "pull_requests", Access: "write", For: "pr list (read), pr label, pr merge"},
 	{Name: "contents", Access: "write", For: "pr merge"},
-	{Name: "issues", Access: "write", For: "pr label"},
 }
 
 // WorkflowsPermission lets pr merge merge pull requests that change .github/workflows/.
