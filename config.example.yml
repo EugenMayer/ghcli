@@ -1,0 +1,13 @@
+# optional, copy to ~/.ghcli/config.yml
+# the token is looked up in this order: GHCLI_PAT env var, os.keyring_command, OS keyring (ghcli auth login), github.pat
+#
+# token needs: resource owner = the organization owning the repositories,
+# permissions "Pull requests: read & write" and "Contents: read & write"
+os:
+  # command printing the token, used instead of the built-in OS keyring access,
+  # e.g. pass, 1Password (op read ...), sops -d --extract ..., secret-tool lookup ...
+  keyring_command: pass show github/ghcli | head -n 1
+
+github:
+  # or the token in plain text (chmod 600 this file)
+  # pat: github_pat_xxx
