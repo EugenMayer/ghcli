@@ -24,11 +24,12 @@ func newLabelCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "label",
 		Short: "Label open pull requests interactively",
-		Long: `Pick a label (preselected: 'done'), then label open pull requests that don't have it yet.
+		Long: `Pick a label, then label open pull requests that don't have it yet. The ready-to-merge
+label ('done' unless pr.ready_to_merge_label in the config says otherwise) is preselected.
 
-In the list, enter labels the selected pull request and removes it from the list; the label is
-applied in the background. ctrl+a labels all remaining pull requests. q or esc quits once the
-pending labels are applied, ctrl+c twice aborts.
+In the list, space checks or unchecks a pull request, ctrl+a checks or unchecks all. enter labels
+the checked pull requests one after another. q or esc quits without labeling, ctrl+c while
+labeling aborts.
 
 Adding labels to pull requests needs the repository permission "Pull requests: read and write";
 read is not enough.`,
@@ -39,20 +40,24 @@ read is not enough.`,
 
 func runLabel(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
+	cfg, err := loadPRConfig(cmd)
+	if err != nil {
+		return err
+	}
 	s, err := setup(cmd)
 	if err != nil {
 		return err
 	}
-	client, repo := s.client, s.repo
+	repo := s.repo
 
-	labels, err := listLabels(ctx, client, repo)
+	labels, err := listLabels(ctx, s.client, s.repo)
 	if err != nil {
 		return err
 	}
 	if len(labels) == 0 {
 		return fmt.Errorf("repository %s has no labels", repo)
 	}
-	label, err := selectLabel(repo, labels)
+	label, err := selectLabel(repo, labels, resolveReadyLabel("", cfg))
 	if err != nil {
 		return err
 	}
@@ -61,6 +66,16 @@ func runLabel(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	m, err := s.labelInteractively(ctx, label, prs, "label checked")
+	if err != nil || m == nil {
+		return err
+	}
+	return m.summary(cmd.OutOrStdout())
+}
+
+// labelInteractively shows the open pull requests without the label and lets the user label them.
+// finishHint describes what enter does. It returns nil if all pull requests already have the label.
+func (s *session) labelInteractively(ctx context.Context, label string, prs []*github.PullRequest, finishHint string) (*labelModel, error) {
 	var unlabeled []*github.PullRequest
 	for _, pr := range prs {
 		if !hasLabel(pr, label) {
@@ -68,19 +83,21 @@ func runLabel(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if len(unlabeled) == 0 {
-		fmt.Printf("All open pull requests in %s are labeled %q\n", repo, label)
-		return nil
+		fmt.Printf("All open pull requests in %s are labeled %q\n", s.repo, label)
+		return nil, nil
 	}
 
 	apply := func(ctx context.Context, number int) error {
-		_, _, err := client.Issues.AddLabelsToIssue(ctx, repo.Owner, repo.Name, number, []string{label})
+		_, _, err := s.client.Issues.AddLabelsToIssue(ctx, s.repo.Owner, s.repo.Name, number, []string{label})
 		return labelsAPIError(err)
 	}
-	final, err := tea.NewProgram(newLabelModel(ctx, repo, label, unlabeled, apply), tea.WithContext(ctx)).Run()
+	m := newLabelModel(ctx, s.repo, label, unlabeled, apply)
+	m.finishHint = finishHint
+	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return final.(*labelModel).summary(cmd.OutOrStdout())
+	return final.(*labelModel), nil
 }
 
 func listLabels(ctx context.Context, client *github.Client, repo gh.Repo) ([]*github.Label, error) {
@@ -140,8 +157,8 @@ func describeAcceptedPermissions(header string) string {
 	return "one of: " + strings.Join(sets, ", or ")
 }
 
-// selectLabel lets the user pick a label, with the cursor on the done label if it exists.
-func selectLabel(repo gh.Repo, labels []*github.Label) (string, error) {
+// selectLabel lets the user pick a label, with the cursor on the preselected label if it exists.
+func selectLabel(repo gh.Repo, labels []*github.Label, preselected string) (string, error) {
 	items := make([]string, 0, len(labels))
 	cursor := 0
 	for i, l := range labels {
@@ -150,7 +167,7 @@ func selectLabel(repo gh.Repo, labels []*github.Label) (string, error) {
 			item += " – " + d
 		}
 		items = append(items, item)
-		if strings.EqualFold(l.GetName(), defaultDoneLabel) {
+		if strings.EqualFold(l.GetName(), preselected) {
 			cursor = i
 		}
 	}
@@ -179,31 +196,33 @@ type labelDoneMsg struct {
 	err error
 }
 
-// labelModel is the interactive list. Labeling is optimistic: a pull request leaves the list as
-// soon as it is chosen, and returns with an error message if labeling fails. Labels are applied
-// one at a time in the background, so GitHub's limits for write requests aren't triggered.
+// labelModel is a checkbox list: space checks pull requests, enter labels the checked ones. Labels
+// are applied one at a time, so GitHub's limits for write requests aren't triggered.
 type labelModel struct {
 	ctx   context.Context
 	repo  gh.Repo
 	label string
 	apply labeler
 
-	remaining []*github.PullRequest
-	order     map[int]int // PR number -> position in the original list, to put failed ones back
-	cursor    int
-	offset    int // first visible row
-	height    int // terminal height, 0 until known
-	width     int // terminal width, 0 until known
+	finishHint string // what enter does, shown in the help line
 
-	queue    []*github.PullRequest
+	prs     []*github.PullRequest
+	checked map[int]bool // PR number -> checked
+	cursor  int
+	offset  int // first visible row
+	height  int // terminal height, 0 until known
+	width   int // terminal width, 0 until known
+
+	queue    []*github.PullRequest // checked pull requests not labeled yet, once enter was pressed
 	inFlight *github.PullRequest
 
 	labeled  []*github.PullRequest
 	failed   map[int]error
-	messages []string // confirmations shown at the bottom, newest last
+	messages []string // results shown at the bottom, newest last
 
-	quitting bool // waiting for pending labels before quitting
-	aborted  bool
+	applying bool // enter was pressed, the checked pull requests are being labeled
+	finished bool // all checked pull requests were processed
+	aborted  bool // ctrl+c while labeling
 	done     bool
 }
 
@@ -218,13 +237,9 @@ var (
 )
 
 func newLabelModel(ctx context.Context, repo gh.Repo, label string, prs []*github.PullRequest, apply labeler) *labelModel {
-	order := make(map[int]int, len(prs))
-	for i, pr := range prs {
-		order[pr.GetNumber()] = i
-	}
 	return &labelModel{
-		ctx: ctx, repo: repo, label: label, apply: apply,
-		remaining: slices.Clone(prs), order: order, failed: map[int]error{},
+		ctx: ctx, repo: repo, label: label, apply: apply, finishHint: "label checked",
+		prs: slices.Clone(prs), checked: map[int]bool{}, failed: map[int]error{},
 	}
 }
 
@@ -244,10 +259,8 @@ func (m *labelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		number := msg.pr.GetNumber()
 		if msg.err != nil {
 			m.failed[number] = msg.err
-			m.putBack(msg.pr)
 			m.message(styleErr.Render(fmt.Sprintf("✘ #%d %s: %v", number, msg.pr.GetTitle(), msg.err)))
 		} else {
-			delete(m.failed, number)
 			m.labeled = append(m.labeled, msg.pr)
 			m.message(styleOK.Render(fmt.Sprintf("✔ #%d %s labeled %q", number, msg.pr.GetTitle(), m.label)))
 		}
@@ -257,57 +270,61 @@ func (m *labelModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *labelModel) key(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "ctrl+c":
-		if m.quitting {
+	if m.applying {
+		if key == "ctrl+c" {
 			m.aborted = true
 			return m, m.quit()
 		}
-		m.quitting = true
-		return m, m.next()
-	case "q", "esc":
-		m.quitting = true
-		return m, m.next()
-	}
-	if m.quitting {
 		return m, nil
 	}
 
 	switch key {
+	case "ctrl+c", "q", "esc":
+		return m, m.quit()
 	case "up", "k":
 		m.cursor = max(0, m.cursor-1)
 	case "down", "j":
-		m.cursor = min(len(m.remaining)-1, m.cursor+1)
+		m.cursor = min(len(m.prs)-1, m.cursor+1)
 	case "home", "g":
 		m.cursor = 0
 	case "end", "G":
-		m.cursor = len(m.remaining) - 1
-	case "enter", "space":
-		if len(m.remaining) > 0 {
-			m.queue = append(m.queue, m.remaining[m.cursor])
-			m.remaining = slices.Delete(m.remaining, m.cursor, m.cursor+1)
-			m.cursor = min(m.cursor, len(m.remaining)-1)
+		m.cursor = len(m.prs) - 1
+	case "space":
+		if len(m.prs) > 0 {
+			n := m.prs[m.cursor].GetNumber()
+			m.checked[n] = !m.checked[n]
 		}
 	case "ctrl+a":
-		m.queue = append(m.queue, m.remaining...)
-		m.remaining = nil
-		m.cursor = 0
+		all := !m.allChecked()
+		for _, pr := range m.prs {
+			m.checked[pr.GetNumber()] = all
+		}
+	case "enter":
+		m.applying = true
+		for _, pr := range m.prs {
+			if m.checked[pr.GetNumber()] {
+				m.queue = append(m.queue, pr)
+			}
+		}
+		return m, m.next()
 	}
 	m.cursor = max(0, m.cursor)
 	m.scroll()
-	return m, m.next()
+	return m, nil
 }
 
-// next starts labeling the next queued pull request, or quits when there is nothing left to do.
+func (m *labelModel) allChecked() bool {
+	return !slices.ContainsFunc(m.prs, func(pr *github.PullRequest) bool { return !m.checked[pr.GetNumber()] })
+}
+
+// next starts labeling the next checked pull request, or quits when all are processed.
 func (m *labelModel) next() tea.Cmd {
 	if m.inFlight != nil {
 		return nil
 	}
 	if len(m.queue) == 0 {
-		if m.quitting || len(m.remaining) == 0 {
-			return m.quit()
-		}
-		return nil
+		m.finished = true
+		return m.quit()
 	}
 
 	pr := m.queue[0]
@@ -320,19 +337,6 @@ func (m *labelModel) next() tea.Cmd {
 func (m *labelModel) quit() tea.Cmd {
 	m.done = true
 	return tea.Quit
-}
-
-// putBack re-inserts a pull request at its original position.
-func (m *labelModel) putBack(pr *github.PullRequest) {
-	pos, _ := slices.BinarySearchFunc(m.remaining, m.order[pr.GetNumber()], func(p *github.PullRequest, target int) int {
-		return m.order[p.GetNumber()] - target
-	})
-	m.remaining = slices.Insert(m.remaining, pos, pr)
-	if pos <= m.cursor && len(m.remaining) > 1 {
-		m.cursor++ // keep the cursor on the same pull request
-	}
-	m.cursor = min(m.cursor, len(m.remaining)-1)
-	m.scroll()
 }
 
 func (m *labelModel) message(s string) {
@@ -359,7 +363,7 @@ func (m *labelModel) scroll() {
 	if m.cursor >= m.offset+rows {
 		m.offset = m.cursor - rows + 1
 	}
-	m.offset = max(0, min(m.offset, len(m.remaining)-rows))
+	m.offset = max(0, min(m.offset, len(m.prs)-rows))
 }
 
 func (m *labelModel) View() tea.View {
@@ -369,25 +373,27 @@ func (m *labelModel) View() tea.View {
 
 	var b strings.Builder
 	b.WriteString(m.fit(styleTitle.Render(fmt.Sprintf("Label pull requests of %s with %q", m.repo, m.label))) + "\n")
-	b.WriteString(m.fit(styleHelp.Render("↑/↓ move · enter label · ctrl+a label all · q quit")) + "\n\n")
+	b.WriteString(m.fit(styleHelp.Render("↑/↓ move · space check · ctrl+a check all · enter "+m.finishHint+" · q quit")) + "\n\n")
 
-	if len(m.remaining) == 0 {
-		b.WriteString(styleHelp.Render("  no unlabeled pull requests left") + "\n")
-	}
-	end := min(len(m.remaining), m.offset+m.rows())
+	end := min(len(m.prs), m.offset+m.rows())
 	for i := m.offset; i < end; i++ {
-		line := describePR(m.remaining[i])
-		if err, ok := m.failed[m.remaining[i].GetNumber()]; ok {
+		pr := m.prs[i]
+		box := "[ ]"
+		if m.checked[pr.GetNumber()] {
+			box = "[x]"
+		}
+		line := box + " " + describePR(pr)
+		if err, ok := m.failed[pr.GetNumber()]; ok {
 			line += styleErr.Render(fmt.Sprintf("  (failed: %v)", err))
 		}
-		if i == m.cursor {
+		if i == m.cursor && !m.applying {
 			line = styleCursor.Render("› " + line)
 		} else {
 			line = "  " + line
 		}
 		b.WriteString(m.fit(line) + "\n")
 	}
-	if hidden := len(m.remaining) - end; hidden > 0 {
+	if hidden := len(m.prs) - end; hidden > 0 {
 		b.WriteString(styleHelp.Render(fmt.Sprintf("  … %d more", hidden)) + "\n")
 	}
 
@@ -398,11 +404,9 @@ func (m *labelModel) View() tea.View {
 	if m.inFlight != nil {
 		status := fmt.Sprintf("… labeling #%d", m.inFlight.GetNumber())
 		if n := len(m.queue); n > 0 {
-			status += fmt.Sprintf(", %d queued", n)
+			status += fmt.Sprintf(", %d left", n)
 		}
-		if m.quitting {
-			status += " (quitting when done, ctrl+c to abort)"
-		}
+		status += " (ctrl+c to abort)"
 		b.WriteString(m.wrap(styleHelp.Render(status)) + "\n")
 	}
 	return tea.NewView(b.String())
@@ -426,6 +430,10 @@ func (m *labelModel) wrap(msg string) string {
 
 // summary prints the result and returns an error if pull requests could not be labeled.
 func (m *labelModel) summary(w io.Writer) error {
+	if !m.applying {
+		fmt.Fprintln(w, "quit, no pull requests were labeled")
+		return nil
+	}
 	for _, pr := range m.labeled {
 		fmt.Fprintf(w, "✔ #%d %s labeled %q\n", pr.GetNumber(), pr.GetTitle(), m.label)
 	}

@@ -23,6 +23,7 @@ import (
 
 var (
 	keyEnter = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keySpace = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	keyDown  = tea.KeyPressMsg{Code: tea.KeyDown}
 	keyCtrlA = tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl}
 	keyCtrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
@@ -92,110 +93,112 @@ func (h *harness) finish() {
 	h.handle(next)
 }
 
-func (h *harness) remaining() []int {
+func (h *harness) checked() []int {
 	var n []int
-	for _, pr := range h.m.remaining {
-		n = append(n, pr.GetNumber())
+	for _, pr := range h.m.prs {
+		if h.m.checked[pr.GetNumber()] {
+			n = append(n, pr.GetNumber())
+		}
 	}
 	return n
 }
 
-func TestLabelOptimisticAndSequential(t *testing.T) {
+func TestLabelCheckThenApplySequentially(t *testing.T) {
 	h := newHarness(t, nil, 1, 2, 3, 4)
 
-	h.press(keyEnter) // #1: removed at once, request started
-	if got := h.remaining(); !slices.Equal(got, []int{2, 3, 4}) {
-		t.Fatalf("remaining = %v", got)
-	}
-	h.press(keyDown, keyEnter) // #3 while #1 is still in flight: queued, not started
-	if got := h.remaining(); !slices.Equal(got, []int{2, 4}) || len(h.pending) != 1 || len(h.m.queue) != 1 {
-		t.Fatalf("remaining = %v, pending %d, queued %d", got, len(h.pending), len(h.m.queue))
-	}
-
-	h.finish() // #1 done, #3 starts
-	if len(h.pending) != 1 || !strings.Contains(h.m.View().Content, "✔ #1") {
-		t.Errorf("after #1: pending %d, view:\n%s", len(h.pending), h.m.View().Content)
-	}
-	h.finish()
-	if !slices.Equal(h.applied, []int{1, 3}) || h.quit {
-		t.Errorf("applied %v, quit %v", h.applied, h.quit)
-	}
-}
-
-func TestLabelFailurePutsBack(t *testing.T) {
-	h := newHarness(t, map[int]bool{2: true}, 1, 2, 3)
-
-	h.press(keyDown, keyEnter) // #2
-	h.finish()
-	if got := h.remaining(); !slices.Equal(got, []int{1, 2, 3}) {
-		t.Fatalf("failed PR not put back in place: %v", got)
+	h.press(keySpace, keyDown, keyDown, keySpace) // check #1 and #3
+	if got := h.checked(); !slices.Equal(got, []int{1, 3}) || len(h.pending) != 0 {
+		t.Fatalf("checked = %v, pending %d; want [1 3], nothing applied yet", got, len(h.pending))
 	}
 	view := h.m.View().Content
-	if !strings.Contains(view, "✘ #2") || !strings.Contains(view, "failed: 403 forbidden") {
-		t.Errorf("view misses failure:\n%s", view)
+	if !strings.Contains(view, "[x] #1") || !strings.Contains(view, "[ ] #2") {
+		t.Errorf("view misses checkboxes:\n%s", view)
 	}
 
-	var out bytes.Buffer
-	if err := h.m.summary(&out); err == nil || !strings.Contains(err.Error(), "[2]") {
-		t.Errorf("summary error = %v", err)
+	h.press(keySpace) // uncheck #3
+	h.press(keySpace) // and check it again
+	h.press(keyEnter)
+	if len(h.pending) != 1 || len(h.m.queue) != 1 {
+		t.Fatalf("pending %d, queued %d; want one at a time", len(h.pending), len(h.m.queue))
+	}
+	h.press(keyDown, keySpace) // ignored while labeling
+	h.finish()
+	if h.quit || !strings.Contains(h.m.View().Content, "✔ #1") {
+		t.Errorf("after #1: quit %v, view:\n%s", h.quit, h.m.View().Content)
+	}
+	h.finish()
+	if !slices.Equal(h.applied, []int{1, 3}) || !h.quit || !h.m.finished {
+		t.Errorf("applied %v, quit %v, finished %v", h.applied, h.quit, h.m.finished)
 	}
 }
 
-func TestLabelCtrlAAndAutoQuit(t *testing.T) {
-	h := newHarness(t, nil, 1, 2, 3)
+func TestLabelFailureReported(t *testing.T) {
+	h := newHarness(t, map[int]bool{2: true}, 1, 2, 3)
 
-	h.press(keyCtrlA)
-	if len(h.m.remaining) != 0 || len(h.pending) != 1 {
-		t.Fatalf("remaining %d, pending %d", len(h.m.remaining), len(h.pending))
-	}
+	h.press(keyCtrlA, keyEnter)
 	h.finish()
 	h.finish()
 	h.finish()
 	if !slices.Equal(h.applied, []int{1, 2, 3}) || !h.quit {
-		t.Errorf("applied %v, quit %v; want all labeled and quit", h.applied, h.quit)
+		t.Fatalf("applied %v, quit %v", h.applied, h.quit)
 	}
-
 	var out bytes.Buffer
-	if err := h.m.summary(&out); err != nil || strings.Count(out.String(), "✔") != 3 {
+	if err := h.m.summary(&out); err == nil || !strings.Contains(err.Error(), "[2]") || strings.Count(out.String(), "✔") != 2 {
+		t.Errorf("summary = %q, error = %v", out.String(), err)
+	}
+}
+
+func TestLabelCtrlAToggles(t *testing.T) {
+	h := newHarness(t, nil, 1, 2, 3)
+
+	h.press(keySpace, keyCtrlA)
+	if got := h.checked(); !slices.Equal(got, []int{1, 2, 3}) {
+		t.Fatalf("ctrl+a with some checked: %v, want all", got)
+	}
+	h.press(keyCtrlA)
+	if got := h.checked(); len(got) != 0 {
+		t.Fatalf("ctrl+a with all checked: %v, want none", got)
+	}
+}
+
+func TestLabelEnterWithNothingChecked(t *testing.T) {
+	h := newHarness(t, nil, 1, 2)
+
+	h.press(keyEnter)
+	if !h.quit || !h.m.finished || len(h.applied) != 0 {
+		t.Errorf("quit %v, finished %v, applied %v", h.quit, h.m.finished, h.applied)
+	}
+}
+
+func TestLabelQuitLabelsNothing(t *testing.T) {
+	h := newHarness(t, nil, 1, 2)
+
+	h.press(keySpace, keyQ)
+	if !h.quit || h.m.finished || len(h.applied) != 0 {
+		t.Errorf("quit %v, finished %v, applied %v", h.quit, h.m.finished, h.applied)
+	}
+	var out bytes.Buffer
+	if err := h.m.summary(&out); err != nil || !strings.Contains(out.String(), "no pull requests were labeled") {
 		t.Errorf("summary = %q, %v", out.String(), err)
 	}
 }
 
-func TestLabelQuitWaitsForPending(t *testing.T) {
+func TestLabelCtrlCAborts(t *testing.T) {
 	h := newHarness(t, nil, 1, 2, 3)
 
-	h.press(keyEnter, keyEnter, keyQ) // #1 in flight, #2 queued, then quit
-	if h.quit {
-		t.Fatal("quit before pending labels were applied")
-	}
-	h.press(keyEnter) // ignored while quitting
-	h.finish()
-	h.finish()
-	if !slices.Equal(h.applied, []int{1, 2}) || !h.quit {
-		t.Errorf("applied %v, quit %v", h.applied, h.quit)
-	}
-}
-
-func TestLabelDoubleCtrlCAborts(t *testing.T) {
-	h := newHarness(t, nil, 1, 2, 3)
-
-	h.press(keyEnter, keyEnter, keyCtrlC)
-	if h.quit {
-		t.Fatal("first ctrl+c must wait for pending labels")
-	}
-	h.press(keyCtrlC)
-	if !h.quit || !h.m.aborted {
-		t.Fatal("second ctrl+c must abort")
+	h.press(keyCtrlA, keyEnter, keyCtrlC)
+	if !h.quit || !h.m.aborted || h.m.finished {
+		t.Fatalf("quit %v, aborted %v, finished %v", h.quit, h.m.aborted, h.m.finished)
 	}
 	var out bytes.Buffer
 	_ = h.m.summary(&out)
-	if !strings.Contains(out.String(), "aborted, 2 pull requests were not labeled") {
+	if !strings.Contains(out.String(), "aborted, 3 pull requests were not labeled") {
 		t.Errorf("summary = %q", out.String())
 	}
 }
 
 func TestLabelKeyNames(t *testing.T) {
-	for k, want := range map[tea.KeyPressMsg]string{keyEnter: "enter", keyCtrlA: "ctrl+a", keyCtrlC: "ctrl+c", keyQ: "q", keyDown: "down"} {
+	for k, want := range map[tea.KeyPressMsg]string{keyEnter: "enter", keySpace: "space", keyCtrlA: "ctrl+a", keyCtrlC: "ctrl+c", keyQ: "q", keyDown: "down"} {
 		if got := k.String(); got != want {
 			t.Errorf("key %+v = %q, want %q", k, got, want)
 		}
@@ -218,7 +221,7 @@ func TestLabelProgram(t *testing.T) {
 	var out bytes.Buffer
 	p := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(&out), tea.WithWindowSize(100, 30))
 	go func() {
-		for _, k := range []string{"\r", "\x1b[B", "\r", "\x01"} { // enter, down, enter, ctrl+a
+		for _, k := range []string{" ", "\x1b[B", "\x1b[B", " ", "\r"} { // space, down, down, space, enter
 			time.Sleep(50 * time.Millisecond)
 			_, _ = keys.Write([]byte(k))
 		}
@@ -232,7 +235,7 @@ func TestLabelProgram(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		p.Kill()
-		t.Fatal("program did not quit after all PRs were labeled")
+		t.Fatal("program did not quit after the checked PRs were labeled")
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -240,14 +243,13 @@ func TestLabelProgram(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// enter on #1, then down skips #2 and enter labels #3, ctrl+a labels #2 and #4
-	if !slices.Equal(applied, []int{1, 3, 2, 4}) {
+	if !slices.Equal(applied, []int{1, 3}) {
 		t.Errorf("applied = %v", applied)
 	}
-	if len(final.(*labelModel).labeled) != 4 {
-		t.Errorf("labeled = %d", len(final.(*labelModel).labeled))
+	if fm := final.(*labelModel); len(fm.labeled) != 2 || !fm.finished {
+		t.Errorf("labeled = %d, finished %v", len(fm.labeled), fm.finished)
 	}
-	for _, want := range []string{`Label pull requests of o/r with "done"`, "#2 pr 2", "labeled"} {
+	for _, want := range []string{`Label pull requests of o/r with "done"`, "[x] #1 pr 1", "labeled"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output misses %q", want)
 		}

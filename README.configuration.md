@@ -184,18 +184,21 @@ ghcli uses the first token it finds, in this order:
        pat: github_pat_…
    ```
 
-## Merge strategy
+## Pull request settings
 
-`pr merge` squashes pull requests by default. To create merge commits instead, set the default in
-`~/.ghcli/config.yml`:
+Defaults of `pr label` and `pr merge` go into `~/.ghcli/config.yml`:
 
 ```yaml
 pr:
-  merge_strategy: merge   # squash (default) or merge
+  merge_strategy: merge         # squash (default) or merge
+  ready_to_merge_label: ready   # default: done
 ```
 
-`--strategy squash|merge` overrides it for a single run. If a repository does not allow merge
-commits, `merge` falls back to squash for that pull request.
+- `merge_strategy`: how `pr merge` merges. `--strategy squash|merge` overrides it for a single run.
+  If a repository does not allow merge commits, `merge` falls back to squash for that pull request.
+- `ready_to_merge_label`: the label marking pull requests as ready to merge. `pr label` preselects
+  it, `pr merge --all-ready` and `pr ship` merge every pull request carrying it.
+  `--ready-to-merge-label` overrides it for a single `pr merge` or `pr ship` run.
 
 ## Troubleshooting
 

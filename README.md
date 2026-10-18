@@ -41,16 +41,18 @@ Each release also has a `checksums.txt` with SHA-256 sums of all binaries.
 | Command             | Description                                                          |
 |---------------------|----------------------------------------------------------------------|
 | `ghcli pr list`     | List open pull requests as a table                                   |
-| `ghcli pr label`    | Pick a label (`done` preselected), then label PRs one by one or all with ctrl+a |
+| `ghcli pr label`    | Pick a label (the ready-to-merge label preselected), check PRs with space (ctrl+a: all), enter labels them |
 | `ghcli pr merge`    | Pick an open pull request and merge it                               |
-| `ghcli pr merge --all-done` | Merge all PRs labeled `done` one by one, waiting until each is mergeable |
+| `ghcli pr merge --all-ready` | Merge all PRs with the ready-to-merge label one by one, waiting until each is mergeable |
+| `ghcli pr ship`     | `pr label` with the ready-to-merge label, then `pr merge --all-ready` |
 | `ghcli auth login [--alias org]`  | Store a GitHub token in the OS keyring, one per organization |
 | `ghcli auth logout [--alias org \| --all]` | Remove a token (or all) from the OS keyring  |
 | `ghcli auth status` | Show all tokens, their accounts and API rate limits, and which one the current repository uses |
 
 ```sh
 ghcli pr list
-ghcli pr merge --all-done --strategy merge -R geek-labs/terraform-modules
+ghcli pr ship                # check PRs with space, enter labels them and merges all ready PRs
+ghcli pr merge --all-ready --strategy merge -R geek-labs/terraform-modules
 ```
 
 Run `ghcli --help` or `ghcli <command> --help` to see all flags.
@@ -58,11 +60,13 @@ Run `ghcli --help` or `ghcli <command> --help` to see all flags.
 Without `--repo`, ghcli uses the `origin` remote of the current directory. SSH aliases work too:
 `github:org/repo` is read as organization `org`, repository `repo`.
 
-`--all-done` ignores review status. Before each merge it waits while GitHub computes whether the PR
+`--all-ready` merges the PRs labeled with the ready-to-merge label, `done` by default (change it
+with `pr.ready_to_merge_label` in the [configuration](README.configuration.md#pull-request-settings)
+or `--ready-to-merge-label`). It ignores review status. Before each merge it waits while GitHub computes whether the PR
 can be merged or required checks run, and updates branches that are behind their base. PRs with
 conflicts or that time out are skipped. `pr merge` squashes by default; `--strategy merge`
 creates a merge commit instead, and `pr.merge_strategy` in the config changes the default (see
-[configuration](README.configuration.md#merge-strategy)). If the repository does not allow merge commits,
+[configuration](README.configuration.md#pull-request-settings)). If the repository does not allow merge commits,
 the merge strategy falls back to squash. Branch protection still applies: if reviews are required,
 the merge only succeeds when your user may bypass the protection.
 

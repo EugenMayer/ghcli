@@ -33,6 +33,9 @@ type OS struct {
 type PR struct {
 	// MergeStrategy is the default strategy of pr merge, "squash" or "merge"; empty means squash.
 	MergeStrategy string `yaml:"merge_strategy"`
+	// ReadyToMergeLabel marks pull requests that are ready to merge: preselected by pr label,
+	// merged by pr merge --all-ready. Empty means "done".
+	ReadyToMergeLabel string `yaml:"ready_to_merge_label"`
 }
 
 // DefaultPath returns ~/.ghcli/config.yml.

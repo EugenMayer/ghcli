@@ -10,7 +10,7 @@ func NewCmd() *cobra.Command {
 		Short:   "Work with pull requests",
 	}
 
-	cmd.AddCommand(newListCmd(), newLabelCmd(), newMergeCmd())
+	cmd.AddCommand(newListCmd(), newLabelCmd(), newMergeCmd(), newShipCmd())
 
 	return cmd
 }

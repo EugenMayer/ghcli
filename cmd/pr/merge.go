@@ -13,11 +13,8 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
-	"github.com/EugenMayer/ghcli/internal/config"
 	gh "github.com/EugenMayer/ghcli/internal/github"
 )
-
-const defaultDoneLabel = "done"
 
 // Merge strategies of pr merge; defaultMergeStrategy applies unless the config or --strategy says otherwise.
 const (
@@ -29,10 +26,10 @@ const (
 var mergeStrategies = []string{strategySquash, strategyMerge}
 
 type mergeOptions struct {
-	allDone   bool
-	doneLabel string
-	strategy  string
-	yes       bool
+	allReady   bool
+	readyLabel string
+	strategy   string
+	yes        bool
 
 	waitTimeout  time.Duration
 	pollInterval time.Duration
@@ -47,7 +44,8 @@ func newMergeCmd() *cobra.Command {
 		Short: "Merge open pull requests",
 		Long: `Lists open pull requests and lets you select one to merge.
 
-With --all-done, every open pull request carrying the 'done' label is merged,
+With --all-ready, every open pull request carrying the ready-to-merge label ('done' unless
+pr.ready_to_merge_label in the config or --ready-to-merge-label says otherwise) is merged,
 one after another, regardless of its review status.
 
 Before each merge ghcli waits until the pull request is mergeable: it waits while GitHub
@@ -61,24 +59,41 @@ If the repository does not allow merge commits, the merge strategy falls back to
 		},
 	}
 
-	cmd.Flags().BoolVar(&opts.allDone, "all-done", false, "merge all open PRs labeled with the done label, ignoring review status")
-	cmd.Flags().StringVar(&opts.doneLabel, "done-label", defaultDoneLabel, "label used by --all-done")
+	cmd.Flags().BoolVar(&opts.allReady, "all-ready", false, "merge all open PRs labeled with the ready-to-merge label, ignoring review status")
+	addMergeFlags(cmd, opts)
+
+	return cmd
+}
+
+// addMergeFlags adds the flags pr merge and pr ship share.
+func addMergeFlags(cmd *cobra.Command, opts *mergeOptions) {
+	cmd.Flags().StringVar(&opts.readyLabel, "ready-to-merge-label", "",
+		"ready-to-merge label (default \"done\", or pr.ready_to_merge_label from the config)")
 	cmd.Flags().StringVarP(&opts.strategy, "strategy", "s", "",
 		"merge strategy: squash or merge (default squash, or pr.merge_strategy from the config)")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "do not ask for confirmation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "wait-timeout", 15*time.Minute, "how long to wait for a pull request to become mergeable")
 	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", 4*time.Second, "how often to check whether a pull request is mergeable")
 	cmd.Flags().BoolVar(&opts.updateBranch, "update-branch", true, "update a pull request branch that is behind its base before merging")
-
-	return cmd
 }
 
-func runMerge(cmd *cobra.Command, opts *mergeOptions) error {
-	strategy, err := resolveStrategy(cmd, opts.strategy)
+// resolve fills in strategy and ready-to-merge label from the config where no flag was given.
+func (opts *mergeOptions) resolve(cmd *cobra.Command) error {
+	cfg, err := loadPRConfig(cmd)
 	if err != nil {
 		return err
 	}
-	opts.strategy = strategy
+	if opts.strategy, err = resolveStrategy(opts.strategy, cfg); err != nil {
+		return err
+	}
+	opts.readyLabel = resolveReadyLabel(opts.readyLabel, cfg)
+	return nil
+}
+
+func runMerge(cmd *cobra.Command, opts *mergeOptions) error {
+	if err := opts.resolve(cmd); err != nil {
+		return err
+	}
 
 	ctx := cmd.Context()
 	s, err := setup(cmd)
@@ -92,8 +107,8 @@ func runMerge(cmd *cobra.Command, opts *mergeOptions) error {
 		return err
 	}
 
-	if opts.allDone {
-		return mergeAllDone(ctx, client, repo, prs, opts)
+	if opts.allReady {
+		return mergeAllReady(ctx, client, repo, prs, opts)
 	}
 	return mergeSelected(ctx, client, repo, prs, opts)
 }
@@ -133,33 +148,33 @@ func mergeSelected(ctx context.Context, client *github.Client, repo gh.Repo, prs
 	return mergePR(ctx, client, repo, selected, opts)
 }
 
-func mergeAllDone(ctx context.Context, client *github.Client, repo gh.Repo, prs []*github.PullRequest, opts *mergeOptions) error {
-	var done []*github.PullRequest
+func mergeAllReady(ctx context.Context, client *github.Client, repo gh.Repo, prs []*github.PullRequest, opts *mergeOptions) error {
+	var ready []*github.PullRequest
 	for _, pr := range prs {
-		if hasLabel(pr, opts.doneLabel) {
-			done = append(done, pr)
+		if hasLabel(pr, opts.readyLabel) {
+			ready = append(ready, pr)
 		}
 	}
 
-	if len(done) == 0 {
-		fmt.Printf("No open pull requests labeled %q in %s\n", opts.doneLabel, repo)
+	if len(ready) == 0 {
+		fmt.Printf("No open pull requests labeled %q in %s\n", opts.readyLabel, repo)
 		return nil
 	}
 
-	fmt.Printf("Open pull requests labeled %q in %s:\n", opts.doneLabel, repo)
-	for _, pr := range done {
+	fmt.Printf("Open pull requests labeled %q in %s:\n", opts.readyLabel, repo)
+	for _, pr := range ready {
 		fmt.Println("  " + describePR(pr))
 	}
 
 	if !opts.yes {
-		ok, err := confirm(fmt.Sprintf("Merge these %d pull requests using %s?", len(done), opts.strategy))
+		ok, err := confirm(fmt.Sprintf("Merge these %d pull requests using %s?", len(ready), opts.strategy))
 		if err != nil || !ok {
 			return err
 		}
 	}
 
 	var failed []int
-	for _, pr := range done {
+	for _, pr := range ready {
 		if err := mergePR(ctx, client, repo, pr, opts); err != nil {
 			fmt.Println(err)
 			failed = append(failed, pr.GetNumber())
@@ -167,7 +182,7 @@ func mergeAllDone(ctx context.Context, client *github.Client, repo gh.Repo, prs 
 	}
 
 	if len(failed) > 0 {
-		return fmt.Errorf("%d of %d pull requests could not be merged: %v", len(failed), len(done), failed)
+		return fmt.Errorf("%d of %d pull requests could not be merged: %v", len(failed), len(ready), failed)
 	}
 	return nil
 }
@@ -252,30 +267,6 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 		case <-time.After(opts.pollInterval):
 		}
 	}
-}
-
-// resolveStrategy returns the merge strategy: --strategy if given, else pr.merge_strategy from the
-// config, else defaultMergeStrategy.
-func resolveStrategy(cmd *cobra.Command, flagValue string) (string, error) {
-	if flagValue != "" {
-		if !slices.Contains(mergeStrategies, flagValue) {
-			return "", fmt.Errorf("invalid --strategy %q, expected squash or merge", flagValue)
-		}
-		return flagValue, nil
-	}
-
-	cfgPath, _ := cmd.Flags().GetString("config")
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return "", err
-	}
-	if cfg.PR.MergeStrategy == "" {
-		return defaultMergeStrategy, nil
-	}
-	if !slices.Contains(mergeStrategies, cfg.PR.MergeStrategy) {
-		return "", fmt.Errorf("invalid pr.merge_strategy %q in the config, expected squash or merge", cfg.PR.MergeStrategy)
-	}
-	return cfg.PR.MergeStrategy, nil
 }
 
 // mergeCommitsNotAllowed reports whether GitHub rejected the merge because the repository
