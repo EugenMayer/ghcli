@@ -7,8 +7,7 @@ Compared to the existing `gh` cli offered by github, which is a great tool, it o
 interactive selections and thus. So you might want to use is a complimentary tool, not a replacement.
 
 One good example is batch-merging PR's without using the "merge-queue" feature. You cli will poll and finish the job
-the PR becomes mergeable.
-
+the PR becomes mergeable. See `pr ship`.
 
 ## Installation
 
@@ -44,7 +43,7 @@ Each release also has a `checksums.txt` with SHA-256 sums of all binaries.
 | `ghcli pr label`    | Pick a label (the ready-to-merge label preselected), check PRs with space (ctrl+a: all), enter labels them |
 | `ghcli pr merge`    | Pick an open pull request and merge it                               |
 | `ghcli pr merge --all-ready` | Merge all PRs with the ready-to-merge label one by one, waiting until each is mergeable |
-| `ghcli pr ship`     | `pr label` with the ready-to-merge label, then `pr merge --all-ready` |
+| `ghcli pr ship`     | `pr label` with the ready-to-merge label, then `pr merge --all-ready`. Basically your own mege queye. |
 | `ghcli auth login [--alias org]`  | Store a GitHub token in the OS keyring, one per organization |
 | `ghcli auth logout [--alias org \| --all]` | Remove a token (or all) from the OS keyring  |
 | `ghcli auth status` | Show all tokens, their accounts and API rate limits, and which one the current repository uses |
