@@ -100,3 +100,39 @@ func TestMergePRTimeout(t *testing.T) {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
+
+func TestMergePRFallsBackToSquash(t *testing.T) {
+	var methods []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/o/r/pulls/1", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(pr(true, "clean"))
+	})
+	mux.HandleFunc("PUT /repos/o/r/pulls/1/merge", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MergeMethod string `json:"merge_method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		methods = append(methods, body.MergeMethod)
+		if body.MergeMethod == "merge" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = w.Write([]byte(`{"message":"Merge commits are not allowed on this repository."}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"merged":true,"sha":"abcdef123456"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/"
+	client, err := github.NewClient(github.WithURLs(&base, &base), github.WithAuthToken("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(methods, ","); got != "merge,squash" {
+		t.Errorf("merge methods = %s, want merge,squash", got)
+	}
+}

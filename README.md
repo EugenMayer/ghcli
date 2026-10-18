@@ -60,7 +60,8 @@ Without `--repo`, ghcli uses the `origin` remote of the current directory. SSH a
 
 `--all-done` ignores review status. Before each merge it waits while GitHub computes whether the PR
 can be merged or required checks run, and updates branches that are behind their base. PRs with
-conflicts or that time out are skipped. Branch protection still applies: if reviews are required,
+conflicts or that time out are skipped. If the repository does not allow merge commits, the default
+`--method merge` falls back to squash. Branch protection still applies: if reviews are required,
 the merge only succeeds when your user may bypass the protection.
 
 ## Configuration

@@ -42,7 +42,8 @@ one after another, regardless of its review status.
 
 Before each merge ghcli waits until the pull request is mergeable: it waits while GitHub
 recomputes mergeability or required checks are running (e.g. after the previous merge),
-and updates the branch when it is behind its base. Pull requests with conflicts are skipped.`,
+and updates the branch when it is behind its base. Pull requests with conflicts are skipped.
+If the repository does not allow merge commits, --method merge falls back to squash.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMerge(cmd, opts)
@@ -167,6 +168,7 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 	}
 
 	deadline := time.Now().Add(opts.waitTimeout)
+	method := opts.method
 	branchUpdated := false
 	lastStatus := ""
 
@@ -202,15 +204,21 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 		default:
 			// clean, unstable, has_hooks, blocked or behind: try it, review status is ignored on purpose.
 			result, _, err := client.PullRequests.Merge(ctx, repo.Owner, repo.Name, number, "",
-				&github.PullRequestOptions{MergeMethod: opts.method})
+				&github.PullRequestOptions{MergeMethod: method})
 			if err == nil {
-				fmt.Printf("✔ merged #%d %s (%s)\n", number, pr.GetTitle(), shortSHA(result.GetSHA()))
+				fmt.Printf("✔ merged #%d %s using %s (%s)\n", number, pr.GetTitle(), method, shortSHA(result.GetSHA()))
 				return nil
 			}
 			var ghErr *github.ErrorResponse
 			if !errors.As(err, &ghErr) || ghErr.Response == nil ||
 				(ghErr.Response.StatusCode != http.StatusMethodNotAllowed && ghErr.Response.StatusCode != http.StatusConflict) {
 				return fail("merging: %v", err)
+			}
+			if method == "merge" && mergeCommitsNotAllowed(ghErr) {
+				// The repository only allows squash (or rebase): fall back to squash and retry right away.
+				fmt.Printf("… #%d merge commits are not allowed in %s, using squash\n", number, repo)
+				method = "squash"
+				continue
 			}
 			// 405/409: not mergeable yet, e.g. required checks still running or base branch just changed.
 			status = fmt.Sprintf("not mergeable yet (%s): %s", state, ghErr.Message)
@@ -230,6 +238,13 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 		case <-time.After(opts.pollInterval):
 		}
 	}
+}
+
+// mergeCommitsNotAllowed reports whether GitHub rejected the merge because the repository
+// disallows merge commits ("Merge commits are not allowed on this repository.").
+func mergeCommitsNotAllowed(err *github.ErrorResponse) bool {
+	return err.Response.StatusCode == http.StatusMethodNotAllowed &&
+		strings.Contains(strings.ToLower(err.Message), "merge commits are not allowed")
 }
 
 // confirm asks a y/N question; answering anything but y is not an error.
