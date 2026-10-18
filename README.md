@@ -50,7 +50,7 @@ Each release also has a `checksums.txt` with SHA-256 sums of all binaries.
 
 ```sh
 ghcli pr list
-ghcli pr merge --all-done --method squash -R geek-labs/terraform-modules
+ghcli pr merge --all-done --strategy merge -R geek-labs/terraform-modules
 ```
 
 Run `ghcli --help` or `ghcli <command> --help` to see all flags.
@@ -60,8 +60,10 @@ Without `--repo`, ghcli uses the `origin` remote of the current directory. SSH a
 
 `--all-done` ignores review status. Before each merge it waits while GitHub computes whether the PR
 can be merged or required checks run, and updates branches that are behind their base. PRs with
-conflicts or that time out are skipped. If the repository does not allow merge commits, the default
-`--method merge` falls back to squash. Branch protection still applies: if reviews are required,
+conflicts or that time out are skipped. `pr merge` squashes by default; `--strategy merge`
+creates a merge commit instead, and `pr.merge_strategy` in the config changes the default (see
+[configuration](README.configuration.md#merge-strategy)). If the repository does not allow merge commits,
+the merge strategy falls back to squash. Branch protection still applies: if reviews are required,
 the merge only succeeds when your user may bypass the protection.
 
 ## Configuration

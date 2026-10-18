@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-github/v92/github"
+	"github.com/spf13/cobra"
 
 	gh "github.com/EugenMayer/ghcli/internal/github"
 )
@@ -60,7 +63,7 @@ func pr(mergeable any, state string) map[string]any {
 }
 
 func testOpts() *mergeOptions {
-	return &mergeOptions{method: "merge", waitTimeout: 5 * time.Second, pollInterval: time.Millisecond, updateBranch: true}
+	return &mergeOptions{strategy: "merge", waitTimeout: 5 * time.Second, pollInterval: time.Millisecond, updateBranch: true}
 }
 
 func TestMergePRWaitsUntilMergeable(t *testing.T) {
@@ -134,5 +137,41 @@ func TestMergePRFallsBackToSquash(t *testing.T) {
 	}
 	if got := strings.Join(methods, ","); got != "merge,squash" {
 		t.Errorf("merge methods = %s, want merge,squash", got)
+	}
+}
+
+func TestResolveStrategy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	newCmd := func(cfg string) *cobra.Command {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("config", "", "")
+		if cfg != "" {
+			path := filepath.Join(dir, "config.yml")
+			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_ = cmd.Flags().Set("config", path)
+		}
+		return cmd
+	}
+
+	tests := []struct {
+		name, cfg, flag, want string
+		wantErr               bool
+	}{
+		{name: "default", want: "squash"},
+		{name: "config", cfg: "pr:\n  merge_strategy: merge\n", want: "merge"},
+		{name: "flag over config", cfg: "pr:\n  merge_strategy: merge\n", flag: "squash", want: "squash"},
+		{name: "invalid flag", flag: "rebase", wantErr: true},
+		{name: "invalid config", cfg: "pr:\n  merge_strategy: rebase\n", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveStrategy(newCmd(tt.cfg), tt.flag)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("got %q, %v; want %q, error %v", got, err, tt.want, tt.wantErr)
+			}
+		})
 	}
 }

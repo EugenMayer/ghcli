@@ -184,6 +184,19 @@ ghcli uses the first token it finds, in this order:
        pat: github_pat_…
    ```
 
+## Merge strategy
+
+`pr merge` squashes pull requests by default. To create merge commits instead, set the default in
+`~/.ghcli/config.yml`:
+
+```yaml
+pr:
+  merge_strategy: merge   # squash (default) or merge
+```
+
+`--strategy squash|merge` overrides it for a single run. If a repository does not allow merge
+commits, `merge` falls back to squash for that pull request.
+
 ## Troubleshooting
 
 | Error                                      | Cause                                                                           |

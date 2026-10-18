@@ -13,15 +13,25 @@ import (
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 
+	"github.com/EugenMayer/ghcli/internal/config"
 	gh "github.com/EugenMayer/ghcli/internal/github"
 )
 
 const defaultDoneLabel = "done"
 
+// Merge strategies of pr merge; defaultMergeStrategy applies unless the config or --strategy says otherwise.
+const (
+	strategySquash       = "squash"
+	strategyMerge        = "merge"
+	defaultMergeStrategy = strategySquash
+)
+
+var mergeStrategies = []string{strategySquash, strategyMerge}
+
 type mergeOptions struct {
 	allDone   bool
 	doneLabel string
-	method    string
+	strategy  string
 	yes       bool
 
 	waitTimeout  time.Duration
@@ -43,7 +53,8 @@ one after another, regardless of its review status.
 Before each merge ghcli waits until the pull request is mergeable: it waits while GitHub
 recomputes mergeability or required checks are running (e.g. after the previous merge),
 and updates the branch when it is behind its base. Pull requests with conflicts are skipped.
-If the repository does not allow merge commits, --method merge falls back to squash.`,
+The merge strategy is squash unless pr.merge_strategy in the config or --strategy says otherwise.
+If the repository does not allow merge commits, the merge strategy falls back to squash.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMerge(cmd, opts)
@@ -52,7 +63,8 @@ If the repository does not allow merge commits, --method merge falls back to squ
 
 	cmd.Flags().BoolVar(&opts.allDone, "all-done", false, "merge all open PRs labeled with the done label, ignoring review status")
 	cmd.Flags().StringVar(&opts.doneLabel, "done-label", defaultDoneLabel, "label used by --all-done")
-	cmd.Flags().StringVarP(&opts.method, "method", "m", "merge", "merge method: merge, squash or rebase")
+	cmd.Flags().StringVarP(&opts.strategy, "strategy", "s", "",
+		"merge strategy: squash or merge (default squash, or pr.merge_strategy from the config)")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "do not ask for confirmation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "wait-timeout", 15*time.Minute, "how long to wait for a pull request to become mergeable")
 	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", 4*time.Second, "how often to check whether a pull request is mergeable")
@@ -62,9 +74,11 @@ If the repository does not allow merge commits, --method merge falls back to squ
 }
 
 func runMerge(cmd *cobra.Command, opts *mergeOptions) error {
-	if !slices.Contains([]string{"merge", "squash", "rebase"}, opts.method) {
-		return fmt.Errorf("invalid --method %q, expected merge, squash or rebase", opts.method)
+	strategy, err := resolveStrategy(cmd, opts.strategy)
+	if err != nil {
+		return err
 	}
+	opts.strategy = strategy
 
 	ctx := cmd.Context()
 	s, err := setup(cmd)
@@ -110,7 +124,7 @@ func mergeSelected(ctx context.Context, client *github.Client, repo gh.Repo, prs
 	selected := prs[idx]
 
 	if !opts.yes {
-		ok, err := confirm(fmt.Sprintf("Merge #%d using %s?", selected.GetNumber(), opts.method))
+		ok, err := confirm(fmt.Sprintf("Merge #%d using %s?", selected.GetNumber(), opts.strategy))
 		if err != nil || !ok {
 			return err
 		}
@@ -138,7 +152,7 @@ func mergeAllDone(ctx context.Context, client *github.Client, repo gh.Repo, prs 
 	}
 
 	if !opts.yes {
-		ok, err := confirm(fmt.Sprintf("Merge these %d pull requests using %s?", len(done), opts.method))
+		ok, err := confirm(fmt.Sprintf("Merge these %d pull requests using %s?", len(done), opts.strategy))
 		if err != nil || !ok {
 			return err
 		}
@@ -168,7 +182,7 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 	}
 
 	deadline := time.Now().Add(opts.waitTimeout)
-	method := opts.method
+	strategy := opts.strategy
 	branchUpdated := false
 	lastStatus := ""
 
@@ -204,9 +218,9 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 		default:
 			// clean, unstable, has_hooks, blocked or behind: try it, review status is ignored on purpose.
 			result, _, err := client.PullRequests.Merge(ctx, repo.Owner, repo.Name, number, "",
-				&github.PullRequestOptions{MergeMethod: method})
+				&github.PullRequestOptions{MergeMethod: strategy})
 			if err == nil {
-				fmt.Printf("✔ merged #%d %s using %s (%s)\n", number, pr.GetTitle(), method, shortSHA(result.GetSHA()))
+				fmt.Printf("✔ merged #%d %s using %s (%s)\n", number, pr.GetTitle(), strategy, shortSHA(result.GetSHA()))
 				return nil
 			}
 			var ghErr *github.ErrorResponse
@@ -214,10 +228,10 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 				(ghErr.Response.StatusCode != http.StatusMethodNotAllowed && ghErr.Response.StatusCode != http.StatusConflict) {
 				return fail("merging: %v", err)
 			}
-			if method == "merge" && mergeCommitsNotAllowed(ghErr) {
+			if strategy == strategyMerge && mergeCommitsNotAllowed(ghErr) {
 				// The repository only allows squash (or rebase): fall back to squash and retry right away.
 				fmt.Printf("… #%d merge commits are not allowed in %s, using squash\n", number, repo)
-				method = "squash"
+				strategy = strategySquash
 				continue
 			}
 			// 405/409: not mergeable yet, e.g. required checks still running or base branch just changed.
@@ -238,6 +252,30 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 		case <-time.After(opts.pollInterval):
 		}
 	}
+}
+
+// resolveStrategy returns the merge strategy: --strategy if given, else pr.merge_strategy from the
+// config, else defaultMergeStrategy.
+func resolveStrategy(cmd *cobra.Command, flagValue string) (string, error) {
+	if flagValue != "" {
+		if !slices.Contains(mergeStrategies, flagValue) {
+			return "", fmt.Errorf("invalid --strategy %q, expected squash or merge", flagValue)
+		}
+		return flagValue, nil
+	}
+
+	cfgPath, _ := cmd.Flags().GetString("config")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return "", err
+	}
+	if cfg.PR.MergeStrategy == "" {
+		return defaultMergeStrategy, nil
+	}
+	if !slices.Contains(mergeStrategies, cfg.PR.MergeStrategy) {
+		return "", fmt.Errorf("invalid pr.merge_strategy %q in the config, expected squash or merge", cfg.PR.MergeStrategy)
+	}
+	return cfg.PR.MergeStrategy, nil
 }
 
 // mergeCommitsNotAllowed reports whether GitHub rejected the merge because the repository

@@ -15,6 +15,7 @@ type Config struct {
 	// github.<alias>.pat.
 	GitHub map[string]GitHubAccount `yaml:"github"`
 	OS     OS                       `yaml:"os"`
+	PR     PR                       `yaml:"pr"`
 }
 
 type GitHubAccount struct {
@@ -27,6 +28,11 @@ type OS struct {
 	// keyring access. {alias} is replaced by the alias, e.g. "pass show github/{alias}"; without
 	// it, the command's token is used for every repository.
 	KeyringCommand string `yaml:"keyring_command"`
+}
+
+type PR struct {
+	// MergeStrategy is the default strategy of pr merge, "squash" or "merge"; empty means squash.
+	MergeStrategy string `yaml:"merge_strategy"`
 }
 
 // DefaultPath returns ~/.ghcli/config.yml.
