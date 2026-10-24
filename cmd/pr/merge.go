@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v92/github"
@@ -31,9 +33,21 @@ type mergeOptions struct {
 	strategy   string
 	yes        bool
 
-	waitTimeout  time.Duration
-	pollInterval time.Duration
-	updateBranch bool
+	waitTimeout     time.Duration
+	pollInterval    time.Duration
+	maxPollInterval time.Duration
+	updateBranch    bool
+
+	backoffOnce sync.Once
+	backoff     *pollBackoff
+}
+
+// pollBackoff returns the poll interval shared by all pull requests of this run.
+func (opts *mergeOptions) pollBackoff() *pollBackoff {
+	opts.backoffOnce.Do(func() {
+		opts.backoff = newPollBackoff(opts.pollInterval, max(opts.pollInterval, opts.maxPollInterval))
+	})
+	return opts.backoff
 }
 
 func newMergeCmd() *cobra.Command {
@@ -52,7 +66,11 @@ Before each merge ghcli waits until the pull request is mergeable: it waits whil
 recomputes mergeability or required checks are running (e.g. after the previous merge),
 and updates the branch when it is behind its base. Pull requests with conflicts are skipped.
 The merge strategy is squash unless pr.merge_strategy in the config or --strategy says otherwise.
-If the repository does not allow merge commits, the merge strategy falls back to squash.`,
+If the repository does not allow merge commits, the merge strategy falls back to squash.
+
+Progress is shown as one line per pull request with a status icon, notes like branch updates
+in a box below it. Polling starts at --poll-interval and doubles after every 3 failed attempts
+(API errors, merges GitHub rejected for now) up to --max-poll-interval, to stay below the rate limit.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runMerge(cmd, opts)
@@ -73,7 +91,9 @@ func addMergeFlags(cmd *cobra.Command, opts *mergeOptions) {
 		"merge strategy: squash or merge (default squash, or pr.merge_strategy from the config)")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "do not ask for confirmation")
 	cmd.Flags().DurationVar(&opts.waitTimeout, "wait-timeout", 15*time.Minute, "how long to wait for a pull request to become mergeable")
-	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", 4*time.Second, "how often to check whether a pull request is mergeable")
+	cmd.Flags().DurationVar(&opts.pollInterval, "poll-interval", defaultPollInterval,
+		"initial interval between checks whether a pull request is mergeable; it doubles after every 3 failed attempts")
+	cmd.Flags().DurationVar(&opts.maxPollInterval, "max-poll-interval", defaultMaxPollInterval, "upper bound of the poll interval")
 	cmd.Flags().BoolVar(&opts.updateBranch, "update-branch", true, "update a pull request branch that is behind its base before merging")
 }
 
@@ -145,7 +165,7 @@ func mergeSelected(ctx context.Context, client *github.Client, repo gh.Repo, prs
 		}
 	}
 
-	return mergePR(ctx, client, repo, selected, opts)
+	return mergeBoard(ctx, client, repo, []*github.PullRequest{selected}, opts)
 }
 
 func mergeAllReady(ctx context.Context, client *github.Client, repo gh.Repo, prs []*github.PullRequest, opts *mergeOptions) error {
@@ -173,46 +193,72 @@ func mergeAllReady(ctx context.Context, client *github.Client, repo gh.Repo, prs
 		}
 	}
 
+	return mergeBoard(ctx, client, repo, ready, opts)
+}
+
+// mergeBoard merges prs one after another, since every merge changes the base of the next one,
+// showing the progress of all of them on a board.
+func mergeBoard(ctx context.Context, client *github.Client, repo gh.Repo, prs []*github.PullRequest, opts *mergeOptions) error {
+	labels := make([]string, len(prs))
+	for i, pr := range prs {
+		labels[i] = fmt.Sprintf("#%d %s", pr.GetNumber(), truncate(pr.GetTitle(), 40))
+	}
+	b := newBoard(os.Stdout, labels)
+
 	var failed []int
-	for _, pr := range ready {
-		if err := mergePR(ctx, client, repo, pr, opts); err != nil {
-			fmt.Println(err)
+	for i, pr := range prs {
+		summary, err := mergePR(ctx, client, repo, pr, opts, b.row(i))
+		if err != nil {
+			b.fail(i, fmt.Sprintf("%v (%s)", err, pr.GetHTMLURL()))
 			failed = append(failed, pr.GetNumber())
+			continue
 		}
+		b.done(i, summary)
 	}
 
 	if len(failed) > 0 {
-		return fmt.Errorf("%d of %d pull requests could not be merged: %v", len(failed), len(ready), failed)
+		return fmt.Errorf("%d of %d pull requests could not be merged: %v", len(failed), len(prs), failed)
 	}
 	return nil
 }
 
-// mergePR waits until the PR is mergeable and merges it. After a previous merge GitHub recomputes
-// mergeability and required checks may re-run, so the PR is polled until it can be merged, its
-// branch is updated when it is behind the base, or opts.waitTimeout is reached.
-func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *github.PullRequest, opts *mergeOptions) error {
+// mergePR waits until the PR is mergeable and merges it, returning a one-line summary. After a
+// previous merge GitHub recomputes mergeability and required checks may re-run, so the PR is
+// polled until it can be merged, its branch is updated when it is behind the base, or
+// opts.waitTimeout is reached. API errors and merges GitHub rejects for now count as failed
+// attempts for the poll backoff. Progress goes to rep.
+func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *github.PullRequest, opts *mergeOptions, rep reporter) (string, error) {
 	number := pr.GetNumber()
-	fail := func(format string, args ...any) error {
-		return fmt.Errorf("✘ #%d %s: %s", number, pr.GetTitle(), fmt.Sprintf(format, args...))
+	backoff := opts.pollBackoff()
+	fail := func(format string, args ...any) (string, error) {
+		return "", fmt.Errorf(format, args...)
 	}
 
 	deadline := time.Now().Add(opts.waitTimeout)
 	strategy := opts.strategy
 	branchUpdated := false
-	lastStatus := ""
 
 	for {
+		var (
+			status  string
+			current *github.PullRequest
+		)
 		current, _, err := client.PullRequests.Get(ctx, repo.Owner, repo.Name, number)
 		if err != nil {
-			return fail("fetching pull request: %v", err)
+			backoff.failure()
+			status = fmt.Sprintf("fetching pull request failed: %v", err)
+			current = nil
 		}
 
-		state := current.GetMergeableState()
-		status := ""
+		state := ""
+		if current != nil {
+			state = current.GetMergeableState()
+		}
 		switch {
+		case current == nil:
+			// fetching failed, retry below
 		case current.GetMerged():
-			fmt.Printf("✔ #%d %s was already merged\n", number, pr.GetTitle())
-			return nil
+			return "was already merged", nil
 		case current.GetState() != "open":
 			return fail("pull request is %s", current.GetState())
 		case current.GetDraft():
@@ -229,14 +275,14 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 				}
 			}
 			branchUpdated = true
-			status = "branch is behind " + current.GetBase().GetRef() + ", updated it"
+			rep.Note("branch was behind " + current.GetBase().GetRef() + ", updated it")
+			status = "waiting for the updated branch"
 		default:
 			// clean, unstable, has_hooks, blocked or behind: try it, review status is ignored on purpose.
 			result, _, err := client.PullRequests.Merge(ctx, repo.Owner, repo.Name, number, "",
 				&github.PullRequestOptions{MergeMethod: strategy})
 			if err == nil {
-				fmt.Printf("✔ merged #%d %s using %s (%s)\n", number, pr.GetTitle(), strategy, shortSHA(result.GetSHA()))
-				return nil
+				return fmt.Sprintf("merged using %s (%s)", strategy, shortSHA(result.GetSHA())), nil
 			}
 			var ghErr *github.ErrorResponse
 			if !errors.As(err, &ghErr) || ghErr.Response == nil ||
@@ -245,26 +291,25 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 			}
 			if strategy == strategyMerge && mergeCommitsNotAllowed(ghErr) {
 				// The repository only allows squash (or rebase): fall back to squash and retry right away.
-				fmt.Printf("… #%d merge commits are not allowed in %s, using squash\n", number, repo)
+				rep.Note(fmt.Sprintf("merge commits are not allowed in %s, using squash", repo))
 				strategy = strategySquash
 				continue
 			}
 			// 405/409: not mergeable yet, e.g. required checks still running or base branch just changed.
+			backoff.failure()
 			status = fmt.Sprintf("not mergeable yet (%s): %s", state, ghErr.Message)
 		}
 
 		if time.Now().After(deadline) {
 			return fail("still not mergeable after %s: %s", opts.waitTimeout, status)
 		}
-		if status != lastStatus {
-			fmt.Printf("… #%d %s, waiting\n", number, status)
-			lastStatus = status
-		}
+		interval := backoff.current()
+		rep.Status(fmt.Sprintf("%s, next check in %s", status, interval))
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(opts.pollInterval):
+			return "", ctx.Err()
+		case <-time.After(interval):
 		}
 	}
 }

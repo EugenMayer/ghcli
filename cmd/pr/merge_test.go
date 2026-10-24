@@ -68,7 +68,7 @@ func TestMergePRWaitsUntilMergeable(t *testing.T) {
 		[]map[string]any{pr(nil, "unknown"), pr(true, "behind"), pr(true, "blocked"), pr(true, "clean")},
 		[]int{http.StatusMethodNotAllowed, http.StatusOK})
 
-	err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts())
+	_, err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts(), discardReporter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestMergePRWaitsUntilMergeable(t *testing.T) {
 func TestMergePRConflict(t *testing.T) {
 	client, calls := fakeGitHub(t, []map[string]any{pr(false, "dirty")}, []int{http.StatusOK})
 
-	err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts())
+	_, err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts(), discardReporter{})
 	if err == nil || !strings.Contains(err.Error(), "conflicts") {
 		t.Fatalf("expected conflict error, got %v", err)
 	}
@@ -95,7 +95,7 @@ func TestMergePRTimeout(t *testing.T) {
 
 	opts := testOpts()
 	opts.waitTimeout = 20 * time.Millisecond
-	err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, opts)
+	_, err := mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, opts, discardReporter{})
 	if err == nil || !strings.Contains(err.Error(), "still not mergeable") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestMergePRFallsBackToSquash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts())
+	_, err = mergePR(context.Background(), client, gh.Repo{Owner: "o", Name: "r"}, &github.PullRequest{Number: github.Ptr(1)}, testOpts(), discardReporter{})
 	if err != nil {
 		t.Fatal(err)
 	}
