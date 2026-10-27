@@ -33,6 +33,9 @@ type mergeOptions struct {
 	strategy   string
 	yes        bool
 
+	// blockLabels keep a pull request from being merged, see resolveBlockLabels.
+	blockLabels []string
+
 	waitTimeout     time.Duration
 	pollInterval    time.Duration
 	maxPollInterval time.Duration
@@ -65,6 +68,7 @@ one after another, regardless of its review status.
 Before each merge ghcli waits until the pull request is mergeable: it waits while GitHub
 recomputes mergeability or required checks are running (e.g. after the previous merge),
 and updates the branch when it is behind its base. Pull requests with conflicts are skipped.
+Pull requests labeled 'hold' or with one of pr.merge_block_labels in the config are never merged.
 The merge strategy is squash unless pr.merge_strategy in the config or --strategy says otherwise.
 If the repository does not allow merge commits, the merge strategy falls back to squash.
 
@@ -107,6 +111,7 @@ func (opts *mergeOptions) resolve(cmd *cobra.Command) error {
 		return err
 	}
 	opts.readyLabel = resolveReadyLabel(opts.readyLabel, cfg)
+	opts.blockLabels = resolveBlockLabels(cfg)
 	return nil
 }
 
@@ -157,6 +162,9 @@ func mergeSelected(ctx context.Context, client *github.Client, repo gh.Repo, prs
 		return err
 	}
 	selected := prs[idx]
+	if l := blockingLabel(selected, opts.blockLabels); l != "" {
+		return fmt.Errorf("#%d is labeled %q and must not be merged", selected.GetNumber(), l)
+	}
 
 	if !opts.yes {
 		ok, err := confirm(fmt.Sprintf("Merge #%d using %s?", selected.GetNumber(), opts.strategy))
@@ -171,9 +179,14 @@ func mergeSelected(ctx context.Context, client *github.Client, repo gh.Repo, prs
 func mergeAllReady(ctx context.Context, client *github.Client, repo gh.Repo, prs []*github.PullRequest, opts *mergeOptions) error {
 	var ready []*github.PullRequest
 	for _, pr := range prs {
-		if hasLabel(pr, opts.readyLabel) {
-			ready = append(ready, pr)
+		if !hasLabel(pr, opts.readyLabel) {
+			continue
 		}
+		if l := blockingLabel(pr, opts.blockLabels); l != "" {
+			fmt.Printf("Skipping #%d, it is labeled %q\n", pr.GetNumber(), l)
+			continue
+		}
+		ready = append(ready, pr)
 	}
 
 	if len(ready) == 0 {
@@ -263,6 +276,8 @@ func mergePR(ctx context.Context, client *github.Client, repo gh.Repo, pr *githu
 			return fail("pull request is %s", current.GetState())
 		case current.GetDraft():
 			return fail("pull request is a draft")
+		case blockingLabel(current, opts.blockLabels) != "":
+			return fail("labeled %q, not merging", blockingLabel(current, opts.blockLabels))
 		case state == "dirty" || (current.Mergeable != nil && !current.GetMergeable()):
 			return fail("has merge conflicts")
 		case current.Mergeable == nil || state == "unknown":

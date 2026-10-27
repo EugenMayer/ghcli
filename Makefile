@@ -15,7 +15,8 @@ all: vet test build
 
 ## build: build for the current platform into ./dist/ghcli
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY) .
+	# this fixes the strange DWARF golang version on manjaro GOTOOLCHAIN=go1.27.2
+	GOTOOLCHAIN=go1.27.2 go build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST)/$(BINARY) .
 
 ## install: build and copy the binary to $(PREFIX)/bin/ghcli (uses sudo)
 install: build

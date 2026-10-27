@@ -66,7 +66,7 @@ func runLabel(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := s.labelInteractively(ctx, label, prs, "label checked")
+	m, err := s.labelInteractively(ctx, label, prs, "label checked", nil)
 	if err != nil || m == nil {
 		return err
 	}
@@ -75,7 +75,8 @@ func runLabel(cmd *cobra.Command, _ []string) error {
 
 // labelInteractively shows the open pull requests without the label and lets the user label them.
 // finishHint describes what enter does. It returns nil if all pull requests already have the label.
-func (s *session) labelInteractively(ctx context.Context, label string, prs []*github.PullRequest, finishHint string) (*labelModel, error) {
+// Pull requests carrying one of blockLabels are listed but cannot be checked.
+func (s *session) labelInteractively(ctx context.Context, label string, prs []*github.PullRequest, finishHint string, blockLabels []string) (*labelModel, error) {
 	var unlabeled []*github.PullRequest
 	for _, pr := range prs {
 		if !hasLabel(pr, label) {
@@ -93,6 +94,7 @@ func (s *session) labelInteractively(ctx context.Context, label string, prs []*g
 	}
 	m := newLabelModel(ctx, s.repo, label, unlabeled, apply)
 	m.finishHint = finishHint
+	m.blockLabels = blockLabels
 	final, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
 	if err != nil {
 		return nil, err
@@ -204,7 +206,8 @@ type labelModel struct {
 	label string
 	apply labeler
 
-	finishHint string // what enter does, shown in the help line
+	finishHint  string   // what enter does, shown in the help line
+	blockLabels []string // pull requests with one of these labels cannot be checked
 
 	prs     []*github.PullRequest
 	checked map[int]bool // PR number -> checked
@@ -290,14 +293,14 @@ func (m *labelModel) key(key string) (tea.Model, tea.Cmd) {
 	case "end", "G":
 		m.cursor = len(m.prs) - 1
 	case "space":
-		if len(m.prs) > 0 {
+		if len(m.prs) > 0 && m.blockedBy(m.prs[m.cursor]) == "" {
 			n := m.prs[m.cursor].GetNumber()
 			m.checked[n] = !m.checked[n]
 		}
 	case "ctrl+a":
 		all := !m.allChecked()
 		for _, pr := range m.prs {
-			m.checked[pr.GetNumber()] = all
+			m.checked[pr.GetNumber()] = all && m.blockedBy(pr) == ""
 		}
 	case "enter":
 		m.applying = true
@@ -314,7 +317,14 @@ func (m *labelModel) key(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m *labelModel) allChecked() bool {
-	return !slices.ContainsFunc(m.prs, func(pr *github.PullRequest) bool { return !m.checked[pr.GetNumber()] })
+	return !slices.ContainsFunc(m.prs, func(pr *github.PullRequest) bool {
+		return m.blockedBy(pr) == "" && !m.checked[pr.GetNumber()]
+	})
+}
+
+// blockedBy returns the block label that keeps pr from being checked, or "" if there is none.
+func (m *labelModel) blockedBy(pr *github.PullRequest) string {
+	return blockingLabel(pr, m.blockLabels)
 }
 
 // next starts labeling the next checked pull request, or quits when all are processed.
@@ -382,7 +392,14 @@ func (m *labelModel) View() tea.View {
 		if m.checked[pr.GetNumber()] {
 			box = "[x]"
 		}
+		blocked := m.blockedBy(pr)
+		if blocked != "" {
+			box = "[-]"
+		}
 		line := box + " " + describePR(pr)
+		if blocked != "" {
+			line = styleHelp.Render(line + fmt.Sprintf("  (blocked by label %q)", blocked))
+		}
 		if err, ok := m.failed[pr.GetNumber()]; ok {
 			line += styleErr.Render(fmt.Sprintf("  (failed: %v)", err))
 		}

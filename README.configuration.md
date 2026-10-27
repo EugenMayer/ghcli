@@ -192,6 +192,7 @@ Defaults of `pr label` and `pr merge` go into `~/.ghcli/config.yml`:
 pr:
   merge_strategy: merge         # squash (default) or merge
   ready_to_merge_label: ready   # default: done
+  merge_block_labels: [wip, do not merge]   # in addition to "hold"
 ```
 
 - `merge_strategy`: how `pr merge` merges. `--strategy squash|merge` overrides it for a single run.
@@ -199,6 +200,9 @@ pr:
 - `ready_to_merge_label`: the label marking pull requests as ready to merge. `pr label` preselects
   it, `pr merge --all-ready` and `pr ship` merge every pull request carrying it.
   `--ready-to-merge-label` overrides it for a single `pr merge` or `pr ship` run.
+- `merge_block_labels`: labels that keep a pull request from being merged by `pr merge` and `pr ship`
+  (case-insensitive). `hold` always blocks and cannot be turned off; the list only adds more labels.
+  `pr merge --all-ready` and `pr ship` skip such pull requests, selecting one in `pr merge` is refused.
 
 ## Troubleshooting
 

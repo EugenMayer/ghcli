@@ -36,6 +36,9 @@ type PR struct {
 	// ReadyToMergeLabel marks pull requests that are ready to merge: preselected by pr label,
 	// merged by pr merge --all-ready. Empty means "done".
 	ReadyToMergeLabel string `yaml:"ready_to_merge_label"`
+	// MergeBlockLabels are labels that keep a pull request from being merged by pr merge and
+	// pr ship, in addition to the built-in "hold", which always blocks.
+	MergeBlockLabels []string `yaml:"merge_block_labels"`
 }
 
 // DefaultPath returns ~/.ghcli/config.yml.

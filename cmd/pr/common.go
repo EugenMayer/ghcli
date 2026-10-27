@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/google/go-github/v92/github"
 	"github.com/manifoldco/promptui"
@@ -112,6 +113,34 @@ func resolveReadyLabel(flagValue string, cfg config.PR) string {
 	default:
 		return defaultReadyLabel
 	}
+}
+
+// holdLabel is GitHub's default label for pull requests that must not be merged yet. It always
+// blocks merging and cannot be turned off by the config.
+const holdLabel = "hold"
+
+// resolveBlockLabels returns the labels blocking a merge: holdLabel plus pr.merge_block_labels
+// from the config, without empty entries and duplicates (case-insensitive).
+func resolveBlockLabels(cfg config.PR) []string {
+	labels := []string{holdLabel}
+	for _, l := range cfg.MergeBlockLabels {
+		l = strings.TrimSpace(l)
+		if l == "" || slices.ContainsFunc(labels, func(x string) bool { return strings.EqualFold(x, l) }) {
+			continue
+		}
+		labels = append(labels, l)
+	}
+	return labels
+}
+
+// blockingLabel returns the first of blockLabels carried by pr, or "" if there is none.
+func blockingLabel(pr *github.PullRequest, blockLabels []string) string {
+	for _, l := range blockLabels {
+		if hasLabel(pr, l) {
+			return l
+		}
+	}
+	return ""
 }
 
 // resolveStrategy returns the merge strategy: flagValue (--strategy) if given, else

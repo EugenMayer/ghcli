@@ -3,6 +3,7 @@ package pr
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -22,7 +23,7 @@ func TestLoadPRConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (config.PR{MergeStrategy: "merge", ReadyToMergeLabel: "ready"}); cfg != want {
+	if want := (config.PR{MergeStrategy: "merge", ReadyToMergeLabel: "ready"}); !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
 	}
 }
@@ -58,6 +59,26 @@ func TestResolveReadyLabel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := resolveReadyLabel(tt.flag, config.PR{ReadyToMergeLabel: tt.cfg}); got != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveBlockLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  []string
+		want []string
+	}{
+		{name: "hold always", want: []string{"hold"}},
+		{name: "extra", cfg: []string{"wip", "do not merge"}, want: []string{"hold", "wip", "do not merge"}},
+		{name: "hold cannot be removed or duplicated", cfg: []string{"Hold", "", "wip", "WIP"}, want: []string{"hold", "wip"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveBlockLabels(config.PR{MergeBlockLabels: tt.cfg})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
 	}

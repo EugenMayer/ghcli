@@ -306,3 +306,28 @@ func TestDescribeAcceptedPermissions(t *testing.T) {
 		}
 	}
 }
+
+func TestLabelBlockedPRsCannotBeChecked(t *testing.T) {
+	prs := testPRs(1, 2, 3)
+	prs[1].Labels = []*github.Label{{Name: "Hold"}}
+	var applied []int
+	apply := func(_ context.Context, n int) error { applied = append(applied, n); return nil }
+	m := newLabelModel(context.Background(), gh.Repo{Owner: "o", Name: "r"}, "done", prs, apply)
+	m.blockLabels = []string{"hold"}
+
+	m.Update(keyDown) // cursor on blocked #2
+	m.Update(keySpace)
+	if m.checked[2] {
+		t.Error("space checked a blocked pull request")
+	}
+	m.Update(keyCtrlA)
+	if !m.checked[1] || !m.checked[3] || m.checked[2] {
+		t.Errorf("ctrl+a checked %v, want only 1 and 3", m.checked)
+	}
+	if !m.allChecked() {
+		t.Error("allChecked must ignore blocked pull requests")
+	}
+	if view := m.View().Content; !strings.Contains(view, "[-]") || !strings.Contains(view, `blocked by label "hold"`) {
+		t.Errorf("blocked pull request not marked in view:\n%s", view)
+	}
+}

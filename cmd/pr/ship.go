@@ -42,7 +42,7 @@ func runShip(cmd *cobra.Command, opts *mergeOptions) error {
 	if err != nil {
 		return err
 	}
-	m, err := s.labelInteractively(ctx, opts.readyLabel, prs, "label checked and merge")
+	m, err := s.labelInteractively(ctx, opts.readyLabel, prs, "label checked and merge", opts.blockLabels)
 	if err != nil {
 		return err
 	}
